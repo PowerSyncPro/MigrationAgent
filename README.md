@@ -21,4 +21,6 @@ https://kb.powersyncpro.com/en_US/create-powersyncpro-entraid-application
 
 How to migrate a workgroup machine
 
-You will need the syntax
+For more information reffer to this KB article.
+
+https://kb.powersyncpro.com/workgroup-workstation-migration-process
