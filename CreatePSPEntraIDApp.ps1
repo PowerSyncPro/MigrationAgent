@@ -30,7 +30,7 @@ if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
 
 Write-Host -ForegroundColor Cyan "Creating App registration in your tenant called '$appName'"
 Write-Host "`n"
-Write-Host -ForegroundColor Cyan "First, enter the ID of the tennat you wish PowerSyncPro to connect to:"
+Write-Host -ForegroundColor Cyan "First, enter the ID of the tenant you wish PowerSyncPro to connect to:"
 $tenantID = Read-Host
 
 $redirectUri = "http://localhost:5000/redirect"
