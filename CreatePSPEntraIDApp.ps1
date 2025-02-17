@@ -5,12 +5,26 @@
 .NOTES
     Date            November/2024
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 1.0
+    Version: 2.0
+    Updated: 17th Feb, added check for federated account.
 #>
 
 # Define application details
 
 $appName = "PowerSyncPro Dirsync and Migration Agent"
+
+$asciiLogo="
+ ____                        ____                   ____            
+|  _ \ _____      _____ _ __/ ___| _   _ _ __   ___|  _ \ _ __ ___  
+| |_) / _ \ \ /\ / / _ \ '__\___ \| | | | '_ \ / __| |_) | '__/ _ \ 
+|  __/ (_) \ V  V /  __/ |   ___) | |_| | | | | (__|  __/| | | (_) |
+|_|   \___/ \_/\_/ \___|_|  |____/ \__, |_| |_|\___|_|   |_|  \___/ 
+                                   |___/                            
+"
+Write-Host $asciiLogo
+Write-Host "Use this script to create the app registration for all features in PowerSyncPro"
+Write-Host "Do not close this window until you have copied the App secret which will be produced at the end."
+
 
 # Check if the Microsoft.Graph module is installed
 Write-Host -ForegroundColor Cyan "Checking that Microsoft.Graph is installed"
@@ -33,12 +47,12 @@ Write-Host "`n"
 Write-Host -ForegroundColor Cyan "First, enter the ID of the tenant you wish PowerSyncPro to connect to:"
 $tenantID = Read-Host
 
-$redirectUri = "http://localhost:5000/redirect"
+$redirectUri = "http://localhost:5000/redirect" #  this should not be changed
 $termsOfServiceUrl = "https://downloads.powersyncpro.com/current/Declaration-Software-End-User-License-Agreement.pdf"
 $homepageurl = "https://powersyncpro.com/"
 $PrivacyStatementUrl  = "https://powersyncpro.com/privacy-policy/"
 $SupportUrl = "https://kb.powersyncpro.com"
-$requiredPermissions = @("Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Organization.Read.All")
+$requiredPermissions = @("Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Organization.Read.All","User.Read")
 
 $currentgraphconnection = get-mgcontext
 if($currentgraphconnection -and $currentgraphconnection.tenantid -ne $tenantID){
@@ -51,11 +65,29 @@ if($currentgraphconnection -and $currentgraphconnection.tenantid -ne $tenantID){
 
 $NewGraphConnection = get-mgcontext
 
+#Checking to see if we have all permissions, sometimes previous sessions can persist. 
 if(($requiredPermissions | Where-Object { $_ -notin @($NewGraphConnection.Scopes) }) -gt 0){Write-Output "Not all permissions were granted to Graph";exit}
+
+#Checking if the account is federated. 
+$user = Get-MgUser -UserId $NewGraphConnection.Account
+$upn = $user.UserPrincipalName
+$domain = $upn.Split("@")[1]
+$domainConfig = Get-MgDomain -DomainId $domain
+
+if ($domainConfig.AuthenticationType -eq "Federated") {
+    Write-Host "FYI This account is federated. " -ForegroundColor Red
+    Write-Host "`n"
+    Write-Host "Whilst creating the app registration should succeed, if you wish to create a bulk enrolement token" -ForegroundColor Red
+    Write-Host "for workstation joining to Entra (Entra Joined/Cloud Native), you will need to use an account which" -ForegroundColor Red
+    Write-Host "is not federated when requesting the PBRT in the PowerSyncPro directories config." -ForegroundColor Red
+} else {
+    Write-Host "FYI: This account is not federated."  -ForegroundColor Green
+}
 
 Write-Host -ForegroundColor Cyan "Connected to '$tenantID' with $($NewGraphConnection.Account)"
 
 #check for Microsoft.Azure.SyncFabric
+Write-Host -ForegroundColor Cyan "Verifying that Microsoft.Azure.SyncFabric exists, creating if not."
 $SyncFabric=Get-MgServicePrincipal | Where-Object {$_.AppId -eq "00000014-0000-0000-c000-000000000000"}
 if(!$SyncFabric){
     Write-Host -ForegroundColor Cyan "Adding Microsoft.Azure.SyncFabric"
@@ -115,7 +147,7 @@ $requiredResourceAccess = @(
     }
 )
 
- Write-Host -ForegroundColor Cyan "Creating application '$appName'"
+ Write-Host -ForegroundColor Cyan "Creating PowerSyncPro application '$appName'"
 $app = New-MgApplication -DisplayName $appName -spa @{
     RedirectUris = @($redirectUri)
 } -Info @{
@@ -172,3 +204,7 @@ Write-Output "Tenant ID         : $tenantId"
 Write-Output "Application ID    : $clientId"
 Write-Output "Client Secret text: $clientSecret"
 Write-Output "`n"
+Write-Output "If creating a BPRT you must navigate the the URL $redirectUri (no other vanity name) to successfully create the token."
+Write-Output "`n"
+Write-Output "The script will now finish, please ensure you have saved the information above."
+pause
