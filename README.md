@@ -24,3 +24,21 @@ How to migrate a workgroup machine
 For more information reffer to this KB article.
 
 https://kb.powersyncpro.com/workgroup-workstation-migration-process
+
+# Manage-PSPSCP.ps1
+
+Manage the Service Connection Point for the PowerSyncPro proxcy agent
+
+List the SCP if available - without any parameters
+./Manage-PSPSCP.ps1
+
+Add URL to a new or existing SCP
+./Manage-PSPSCP.ps1 -ProxyURL https://pspproxy1.contoso.com:5001
+./Manage-PSPSCP.ps1 -ProxyURL https://pspproxy2.contoso.com:5001
+
+Remove a URL from the SCP
+./Manage-PSPSCP.ps1 -ProxyURL http://something:5000/agent -Remove
+
+Remove the SCP altogether
+./Manage-PSPSCP.ps1 -Remove
+
