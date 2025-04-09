@@ -8,13 +8,13 @@ Param (
     [string]$LocalEndpoint = "localhost:5000"
 )
 
-# Validate $NewValue
+# Validate $LocalEndpoint
 if (($LocalEndpoint -match "[/\\]" -or $LocalEndpoint -imatch "http") -and $LocalEndpoint -imatch ":") {
     Write-Error "Error: The PSP local endpoint must not include slashes or 'http'."
     exit 1
 }
 
-# Validate $LocalEndpoint
+# Validate $Domain
 if ($Domain -match "[/\\]" -or $Domain -match "http") {
     Write-Error "Error: The PSP external domain must not include slashes or 'http'."
     exit 1
@@ -31,7 +31,10 @@ $webConfigPath = "C:\inetpub\wwwroot\web.config"
 if (!(Test-Path $webConfigPath)) {
     Write-Error "Error: The file '$webConfigPath' does not exist."
     exit 1
-}
+}else
+        {
+        Write-Host "Found '$webConfigPath' file."
+        }
 
 # Create a backup file with a timestamp (format: yyyyMMddHHmmss) in the same directory
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
