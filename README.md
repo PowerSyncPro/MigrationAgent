@@ -45,11 +45,11 @@ Remove the SCP altogether
 # PSP-Replace-WebConfig.ps1
 
 This will replace and standardise the IIS web.config file with the rewrite rules to prevent /agent/ from being accessible on your endpoint.
-This is intended for a stand alone IIS configuration dedicated for PowerSyncPro migration agent default installation.
+This is intended for a stand alone IIS configuration dedicated for PowerSyncPro migration agent when the server is installed with default settings.
 
-If you're introducing remote proxy agent or remote password agent this will revert the configuration, so this script should not be used.
+If you're introducing remote proxy agent or remote password agent this script will revert the configuration, therefore this script should NOT be used.
 
-NOYTE: any other config in IIS web.config will be replaced and ignored.
+NOTE: all config in IIS web.config will be replaced and ignored with a basic configure intended for remote agent only.
 
 You must supply the domain for the SSL cert and DNS which is pointing to the server.
 
