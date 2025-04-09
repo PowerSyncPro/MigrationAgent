@@ -53,4 +53,8 @@ You must supply the domain for the SSL cert and DNS which is pointing to the ser
 
 .\PSP-Replace-WebConfig.ps1 -Domain "psptraining.migsource.net"
 
+If you have a custom installation then you can also specify the local endpoint
+
+.\PSP-Replace-WebConfig.ps1 -Domain psptraining.migsource.net -LocalEndpoint localhost:5000
+
 
