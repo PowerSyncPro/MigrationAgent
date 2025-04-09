@@ -1,29 +1,28 @@
+#requires -RunAsAdministrator
+
 Param (
-    [Parameter(Mandatory = $true, HelpMessage = "Provide the PSP endpoint external domain (e.g. psp.contoso.com). It must not include slashes or 'http'.")]
-    [string]$NewValue
+    [Parameter(Mandatory = $true, HelpMessage = "Provide the PSP external endpoint domain (e.g. psp.contoso.com). It must not include slashes or 'http'.")]
+    [string]$Domain,
+
+    [Parameter(Mandatory = $false, HelpMessage = "Provide the PSP local endpoint. Defaults to 'localhost:5000'. It must not include slashes or 'http'.")]
+    [string]$LocalEndpoint = "localhost:5000"
 )
 
-# Validate that the new value does not have slashes (/ or \)
-if ($NewValue -match "[/\\]") {
-    Write-Error "Error: The provided value '$NewValue' contains a slash. It must not include '/' or '\' characters."
+# Validate $NewValue
+if (($LocalEndpoint -match "[/\\]" -or $LocalEndpoint -imatch "http") -and $LocalEndpoint -imatch ":") {
+    Write-Error "Error: The PSP local endpoint must not include slashes or 'http'."
     exit 1
 }
 
-# Validate that the new value does not contain 'http' (case-insensitive)
-if ($NewValue -imatch "http") {
-    Write-Error "Error: The provided value '$NewValue' should not contain 'http'."
+# Validate $LocalEndpoint
+if ($Domain -match "[/\\]" -or $Domain -match "http") {
+    Write-Error "Error: The PSP external domain must not include slashes or 'http'."
     exit 1
 }
 
-# Check if the script is running with Administrator privileges
-$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Warning "Administrator privileges are required."
-    exit
-}
-
-# Your script continues here...
-Write-Host "Script is running with administrator privileges."
+# Output the validated parameter values
+Write-Host "PSP Endpoint External Domain: $Domain"
+Write-Host "Local Endpoint: $LocalEndpoint"
 
 # Define the path to the web.config file (modify the path as needed)
 $webConfigPath = "C:\inetpub\wwwroot\web.config" 
@@ -51,12 +50,12 @@ $xmlContent = @"
                 <rule name="ReverseProxyInboundRule1" stopProcessing="true">
                     <match url="agent/(.*)" />
                     <conditions logicalGrouping="MatchAll" trackAllCaptures="false" />
-                    <action type="Rewrite" url="http://localhost:5000/agent/{R:1}" />
+                    <action type="Rewrite" url="http://localendpoint/agent/{R:1}" />
                 </rule>
                 <rule name="Rewrite rule1 for agent" stopProcessing="true">
                     <match url="agent" />
                     <conditions logicalGrouping="MatchAll" trackAllCaptures="false" />
-                    <action type="Rewrite" url="http://localhost:5000/agent" appendQueryString="true" />
+                    <action type="Rewrite" url="http://localendpoint/agent" appendQueryString="true" />
                 </rule>
                 <rule name="RequestBlockingRule1" patternSyntax="Wildcard" stopProcessing="true">
                     <match url="*" />
@@ -68,7 +67,7 @@ $xmlContent = @"
             </rules>
             <outboundRules>
                 <rule name="ReverseProxyOutboundRule1" preCondition="ResponseIsHtml1">
-                    <match filterByTags="A, Form, Img" pattern="^http(s)?://localhost:5000/(.*)" />
+                    <match filterByTags="A, Form, Img" pattern="^http(s)?://localendpoint/(.*)" />
                     <action type="Rewrite" value="http{R:1}://domainnamevalue/{R:2}" />
                 </rule>
                 <preConditions>
@@ -86,12 +85,11 @@ $xmlContent = @"
 "@
 
 # Replace the placeholder "thisvaluehere" with the user provided value
-$xmlContent = $xmlContent -replace "domainnamevalue", $NewValue
+$xmlContent = $xmlContent -replace "domainnamevalue", $Domain
+$xmlContent = $xmlContent -replace "localendpoint", $LocalEndpoint
 
 # Write the updated configuration to web.config (using UTF8 encoding)
 Set-Content -Path $webConfigPath -Value $xmlContent -Encoding UTF8
 Write-Host "web.config has been updated successfully."
 iisreset
 Write-Host "IIS has been restarted successfully."
-
-
