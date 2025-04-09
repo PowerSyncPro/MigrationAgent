@@ -42,3 +42,15 @@ Remove a URL from the SCP
 Remove the SCP altogether
 ./Manage-PSPSCP.ps1 -Remove
 
+# PSP-Replace-WebConfig.ps1
+
+This will replace the IIS web.config file with the rewrite rules to prevent /agent/ from being accessible on your endpoint.
+This is intended for a stand alone IIS configuration dedicated for PowerSyncPro.
+
+NOYTE: any other config in IIS web.config will be replaced and ignored.
+
+You must supply the domain for the SSL cert and DNS which is pointing to the server.
+
+.\PSP-Replace-WebConfig.ps1 -Domain "psptraining.migsource.net"
+
+
