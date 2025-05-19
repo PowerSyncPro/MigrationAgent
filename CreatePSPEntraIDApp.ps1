@@ -6,7 +6,8 @@
     Date            November/2024
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
     Version: 2.0
-    Updated: 17th Feb, added check for federated account.
+    Updated: 17th Feb 2025, added check for federated account.
+    Updated: 19th May 2025, added Graph check, some earlier versions would put permissions into 'Other permissions granted for' instead of 'Configured permissions'
 #>
 
 # Define application details
@@ -27,19 +28,22 @@ Write-Host "Do not close this window until you have copied the App secret which 
 
 
 # Check if the Microsoft.Graph module is installed
-Write-Host -ForegroundColor Cyan "Checking that Microsoft.Graph is installed"
-if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
-    Write-Output "Microsoft.Graph module is not installed. Installing now..."
+Write-Host -ForegroundColor Cyan "Checking that correct Microsoft.Graph is installed"
+$requiredVersion = [version]"2.28.0"
+$installedModule = Get-Module -ListAvailable -Name Microsoft.Graph -ErrorAction SilentlyContinue
+
+if (-not $installedModule -or $installedModule.Version -lt $requiredVersion) {
+    Write-Output "Correct Microsoft.Graph version $requiredVersion module is not installed. Installing now..."
     try {
         # Install the Microsoft.Graph module
-        Install-Module -Name Microsoft.Graph -Scope AllUsers -Force -AllowClobber
+        Install-Module -Name Microsoft.Graph -Scope AllUsers -Force -AllowClobber -RequiredVersion $requiredVersion
         Write-Output "Microsoft.Graph module installed successfully."
     } catch {
         Write-Output "An error occurred during installation: $_"
         exit
     }
 } else {
-    Write-Output "Microsoft.Graph module is already installed."
+    Write-Output "Microsoft.Graph $requiredVersion module is already installed."
 }
 
 Write-Host -ForegroundColor Cyan "Creating App registration in your tenant called '$appName'"
@@ -94,8 +98,7 @@ if(!$SyncFabric){
     New-MgServicePrincipal -AccountEnabled:$true -AppId 00000014-0000-0000-c000-000000000000 -AppRoleAssignmentRequired:$False -DisplayName Microsoft.Azure.SyncFabric -Tags {WindowsAzureActiveDirectoryIntegratedApp}
 }
 
-$requiredResourceAccess = @(
-    @{
+$requiredResourceAccess = @{
         ResourceAppId = "00000003-0000-0000-c000-000000000000"
         ResourceAccess = @(
             @{
@@ -145,7 +148,6 @@ $requiredResourceAccess = @(
             }
         )
     }
-)
 
  Write-Host -ForegroundColor Cyan "Creating PowerSyncPro application '$appName'"
 $app = New-MgApplication -DisplayName $appName -spa @{
@@ -156,7 +158,7 @@ $app = New-MgApplication -DisplayName $appName -spa @{
     TermsOfServiceUrl  = $TermsOfServiceUrl 
 } -RequiredResourceAccess $requiredResourceAccess
 
- Write-Host -ForegroundColor Cyan "Adding additional permissions"
+ Write-Host -ForegroundColor Cyan "Adding bulk enrolement self_service_device_delete permissions"
 
 $newPermission = @{
     resourceAppId = "01cb2876-7ebd-4aa4-9cc9-d28bd4d359a9"
@@ -167,6 +169,7 @@ $newPermission = @{
 }
 
 $ForDeviceRegistration = Get-MgApplication -ApplicationId $app.Id
+
 $updatedPermissions = @($ForDeviceRegistration.RequiredResourceAccess)
 $updatedPermissions += $newPermission
 
