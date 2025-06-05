@@ -1,4 +1,4 @@
-
+# This is a demonstration script, for testing only.
 
 # 1. Connect to Microsoft Graph
 #    - This assumes you have the Microsoft.Graph.Users module installed.
