@@ -59,4 +59,8 @@ If you have a custom installation then you can also specify the local endpoint
 
 .\PSP-Replace-WebConfig.ps1 -Domain psptraining.migsource.net -LocalEndpoint localhost:5000
 
+For more information reffer to this KB article.
+
+https://kb.powersyncpro.com/en_US/restrict-access-to-logon-page-from-the-internet
+
 
