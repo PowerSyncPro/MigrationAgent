@@ -3,6 +3,9 @@
 PowerSyncPro specializes in Windows 10 & 11 Workstation Migrations (Hybrid to Cloud Native), Active Directory (AD) to AD or Entra to Entra migrations.
 We also offer enterprise grade Directory Synchronisation, with features like the 'WhatIf report' to review attribute changes before you commit any configuration change
 
+Goto here for more information
+https://powersyncpro.com/
+
 # CheckPSPServerPrerequisites.ps1
 
 For more information on the requirements validation please refer to our KB article
