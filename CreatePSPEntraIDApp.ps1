@@ -8,11 +8,12 @@
     Version: 2.0
     Updated: 17th Feb 2025, added check for federated account.
     Updated: 19th May 2025, added Graph check, some earlier versions would put permissions into 'Other permissions granted for' instead of 'Configured permissions'
+    Updated: 19th June 2025, added ServicePrincipalLockConfiguration configuration
 #>
 
 # Define application details
 
-$appName = "PowerSyncPro Dirsync and Migration Agent"
+$appName = "PowerSyncPro Dirsync and Migration Agent v4"
 
 $asciiLogo="
  ____                        ____                   ____            
@@ -193,8 +194,20 @@ $TargetSP = Get-MgServicePrincipal -Filter "AppId eq '00000002-0000-0ff1-ce00-00
 New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $SP.id -PrincipalId $SP.id -ResourceId $TargetSP.id -AppRoleId "dc50a0fb-09a3-484d-be87-e023b12c6440" -ErrorAction "stop" | Out-Null
 
 # Generate a client secret
- Write-Host -ForegroundColor Cyan "Creating secret"
+Write-Host -ForegroundColor Cyan "Creating secret"
 $secret = Add-MgApplicationPassword -ApplicationId $ForDeviceRegistration.Id 
+
+# Updating with ServicePrincipalLockConfiguration
+
+$lockConfig = @{
+  IsEnabled                = $true
+  AllProperties            = $true
+  CredentialsWithUsageSign = $true
+  CredentialsWithUsageVerify = $true
+  TokenEncryptionKeyId     = $true
+}
+
+Update-MgApplication -ApplicationId $ForDeviceRegistration.Id -ServicePrincipalLockConfiguration $lockConfig
 
 # Output the Tenant ID, Client ID, and Client Secret
 $tenantId = (Get-MgOrganization).Id
