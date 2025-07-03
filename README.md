@@ -68,7 +68,10 @@ https://kb.powersyncpro.com/en_US/restrict-access-to-logon-page-from-the-interne
 
 # Simulate-UserExperience.ps1
 
-KB currently being created.
 After the machine has successfully received the runbooks, you can run this script to witness how the migration user experience prompts will appear.
+
+For more information reffer to this KB article.
+
+https://kb.powersyncpro.com/en_US/migration-agent/simulate-user-experience-dialogues
 
 
