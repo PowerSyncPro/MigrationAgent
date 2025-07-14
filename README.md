@@ -83,6 +83,8 @@ You may also want to modify this script to run it automatically periodically.
 
 .\Update-EntraDeviceOwner-with-IntuneDeviceOwner.ps1
 
+https://kb.powersyncpro.com/migration-agent/bprt-is-the-owner-workstation-in-entra
+
 
 
 
