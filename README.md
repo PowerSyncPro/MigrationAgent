@@ -78,7 +78,7 @@ https://kb.powersyncpro.com/en_US/migration-agent/simulate-user-experience-dialo
 
 When devices are Entra Joined, we use a bulk enrolement token and that becomes the device owner in Entra. However, if you are enrolling your users with InTune we can collect that ID and apply the Owner who first correctly logged onto the device, take that owner and apply it to the Entra device.
 
-You will need to customise the script to specify your BPRT accouont UPN.
+You will need to customise the script to specify your BPRT account UPN.
 You may also want to modify this script to run it automatically periodically. 
 
 .\Update-EntraDeviceOwner-with-IntuneDeviceOwner.ps1
