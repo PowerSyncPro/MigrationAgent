@@ -9,6 +9,7 @@
     Updated: 17th Feb 2025, added check for federated account.
     Updated: 19th May 2025, added Graph check, some earlier versions would put permissions into 'Other permissions granted for' instead of 'Configured permissions'
     Updated: 19th June 2025, added ServicePrincipalLockConfiguration configuration
+    Updated: 29th Sept 2025, updated BPRT language
 #>
 
 # Define application details
