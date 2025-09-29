@@ -81,13 +81,17 @@ $domainConfig = Get-MgDomain -DomainId $domain
 
 if ($domainConfig.AuthenticationType -eq "Federated") {
     Write-Host "FYI This account is federated. " -ForegroundColor Red
-    Write-Host "`n"
-    Write-Host "Whilst creating the app registration should succeed, if you wish to create a bulk enrolement token" -ForegroundColor Red
-    Write-Host "for workstation joining to Entra (Entra Joined/Cloud Native), you will need to use an account which" -ForegroundColor Red
-    Write-Host "is not federated when requesting the PBRT in the PowerSyncPro directories config." -ForegroundColor Red
 } else {
     Write-Host "FYI: This account is not federated."  -ForegroundColor Green
 }
+
+    Write-Host "`n"
+    Write-Host "Whilst creating the app registration should succeed using any GA, when you create a bulk enrolement token" -ForegroundColor Green
+    Write-Host "(BPRT) for workstation to become Entra Joined (Cloud Native) at that point you will need to use a GA account which:" -ForegroundColor Green
+    Write-Host "- is not federated" -ForegroundColor Red
+    Write-Host "- is not password-less, and not accessed using a TAP (Temporary access pass)" -ForegroundColor Red
+    Write-Host "- the account is listed in 'Users may join devices to Microsoft Entra' setting in Entra, if device enrolement is restrected" -ForegroundColor Red
+    Write-Host "These are Microsoft requirements so are unreleated to PowerSyncPro features and functionality." -ForegroundColor Green
 
 Write-Host -ForegroundColor Cyan "Connected to '$tenantID' with $($NewGraphConnection.Account)"
 
