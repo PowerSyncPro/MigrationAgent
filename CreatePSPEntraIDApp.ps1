@@ -10,6 +10,7 @@
     Updated: 19th May 2025, added Graph check, some earlier versions would put permissions into 'Other permissions granted for' instead of 'Configured permissions'
     Updated: 19th June 2025, added ServicePrincipalLockConfiguration configuration
     Updated: 29th Sept 2025, updated BPRT language
+    Updated: 30th Sept 2025, fixed SyncFabric checks, added warnings about not sharing tenant info with Support.
 #>
 
 # Define application details
@@ -86,19 +87,19 @@ if ($domainConfig.AuthenticationType -eq "Federated") {
     Write-Host "FYI: This account is not federated."  -ForegroundColor Green
 }
 
-    Write-Host "`n"
-    Write-Host "Whilst creating the app registration should succeed using any GA, when you create a bulk enrolement token" -ForegroundColor Green
-    Write-Host "(BPRT) for workstation to become Entra Joined (Cloud Native) at that point you will need to use a GA account which:" -ForegroundColor Green
-    Write-Host "- is not federated" -ForegroundColor Red
-    Write-Host "- is not password-less, and not accessed using a TAP (Temporary access pass)" -ForegroundColor Red
-    Write-Host "- the account is listed in 'Users may join devices to Microsoft Entra' setting in Entra, if device enrolement is restrected" -ForegroundColor Red
-    Write-Host "These are Microsoft requirements so are unreleated to PowerSyncPro features and functionality." -ForegroundColor Green
+Write-Host "`n"
+Write-Host "Whilst creating the app registration should succeed using any GA, when you create a bulk enrolement token" -ForegroundColor Green
+Write-Host "(BPRT) for workstation to become Entra Joined (Cloud Native) at that point you will need to use a GA account which:" -ForegroundColor Green
+Write-Host "- is not federated" -ForegroundColor Red
+Write-Host "- is not password-less, and not accessed using a TAP (Temporary access pass)" -ForegroundColor Red
+Write-Host "- the account is listed in 'Users may join devices to Microsoft Entra' setting in Entra, if device enrolement is restrected" -ForegroundColor Red
+Write-Host "These are Microsoft requirements so are unreleated to PowerSyncPro features and functionality." -ForegroundColor Green
 
 Write-Host -ForegroundColor Cyan "Connected to '$tenantID' with $($NewGraphConnection.Account)"
 
 #check for Microsoft.Azure.SyncFabric
 Write-Host -ForegroundColor Cyan "Verifying that Microsoft.Azure.SyncFabric exists, creating if not."
-$SyncFabric=Get-MgServicePrincipal | Where-Object {$_.AppId -eq "00000014-0000-0000-c000-000000000000"}
+$SyncFabric=Get-MgServicePrincipal -All | Where-Object {$_.AppId -eq "00000014-0000-0000-c000-000000000000"}
 if(!$SyncFabric){
     Write-Host -ForegroundColor Cyan "Adding Microsoft.Azure.SyncFabric"
     New-MgServicePrincipal -AccountEnabled:$true -AppId 00000014-0000-0000-c000-000000000000 -AppRoleAssignmentRequired:$False -DisplayName Microsoft.Azure.SyncFabric -Tags {WindowsAzureActiveDirectoryIntegratedApp}
@@ -218,7 +219,11 @@ Update-MgApplication -ApplicationId $ForDeviceRegistration.Id -ServicePrincipalL
 $tenantId = (Get-MgOrganization).Id
 $clientId = $ForDeviceRegistration.AppId
 $clientSecret = $secret.SecretText
-
+Write-Host "`n"
+Write-Host "---------------------------------------------------------------------------------------------------------"
+Write-Host "`n"
+Write-Warning "This information is unique to your tenant and anyone with it can access your tenant."
+Write-Warning "If you run into issues with this script, please *DO NOT* share this information with PowerSyncPro Support."
 Write-Output "`n"
 Write-Output "Application name  : $appName"
 Write-Output "Tenant ID         : $tenantId"
