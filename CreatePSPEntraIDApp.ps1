@@ -2,6 +2,10 @@
 .DESCRIPTION
     The script created the PowerSyncPro Entra ID app with all permissions related to Migration Agent and Directory Syncronisation
  
+.PARAMETERS
+    -TenantID: Accepts a tenant ID GUID (e.g. abcdef12-3456-7890-1234-56789abcdef0)
+    -RedirectURI: Accepts a Redirect URL for PowerSyncPro Authentication - defaults to http://127.0.0.1:5000/redirect
+
 .NOTES
     Date            November/2024
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
@@ -11,11 +15,26 @@
     Updated: 19th June 2025, added ServicePrincipalLockConfiguration configuration
     Updated: 29th Sept 2025, updated BPRT language
     Updated: 30th Sept 2025, fixed SyncFabric checks, added warnings about not sharing tenant info with Support.
+    Updated: 8th Oct 2025, fixed logic with checking for installed Microsoft Graph version.  Added redirectURI flag handling.
 #>
 
-# Define application details
+param(
+    # Tenant ID parameter, if the user doesn't define this it will prompt for it.
+    [Parameter(Mandatory = $false)]
+    [string]$TenantID,
 
-$appName = "PowerSyncPro Dirsync and Migration Agent v4"
+    # Set optional redirect URI, this should not be changed unless you are administering PSP from outside the local server
+    [Parameter(Mandatory = $false)]
+    [string]$RedirectURI = "http://127.0.0.1:5000/redirect"
+)
+
+# Define application details
+$appName = "PowerSyncPro Dirsync and Migration Agent"
+$termsOfServiceUrl = "https://downloads.powersyncpro.com/current/Declaration-Software-End-User-License-Agreement.pdf"
+$homepageurl = "https://powersyncpro.com/"
+$PrivacyStatementUrl  = "https://powersyncpro.com/privacy-policy/"
+$SupportUrl = "https://kb.powersyncpro.com"
+$requiredPermissions = @("Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Organization.Read.All","User.Read")
 
 $asciiLogo="
  ____                        ____                   ____            
@@ -25,41 +44,92 @@ $asciiLogo="
 |_|   \___/ \_/\_/ \___|_|  |____/ \__, |_| |_|\___|_|   |_|  \___/ 
                                    |___/                            
 "
+
+
+function Test-MicrosoftGraphModule {
+    <#
+    .SYNOPSIS
+        Ensures Microsoft.Graph is installed and up to date.
+    .DESCRIPTION
+        Checks the installed version of Microsoft.Graph, installs if missing,
+        updates if below the required version, and advises restart after update.
+    .PARAMETER MinimumVersion
+        The minimum version of Microsoft.Graph required (default: 2.28.0).
+    .PARAMETER Scope
+        Scope for installation (default: AllUsers).
+    .EXAMPLE
+        Test-MicrosoftGraphModule -MinimumVersion 2.28.0
+    #>
+    [CmdletBinding()]
+    param(
+        [version]$MinimumVersion = [version]"2.28.0",
+        [ValidateSet("AllUsers","CurrentUser")]
+        [string]$Scope = "AllUsers"
+    )
+
+    Write-Host -ForegroundColor Cyan "Checking Microsoft.Graph module (minimum required: $MinimumVersion)..."
+
+    try {
+        $installed = Get-InstalledModule -Name Microsoft.Graph -ErrorAction SilentlyContinue
+    } catch {
+        $installed = $null
+    }
+
+    try {
+        $galleryModule = Find-Module -Name Microsoft.Graph -ErrorAction Stop
+        $latestVersion = $galleryModule.Version
+    } catch {
+        Write-Warning "Unable to query PowerShell Gallery. Proceeding with installed version only."
+        $latestVersion = $null
+    }
+
+    $updatePerformed = $false
+
+    if (-not $installed) {
+        Write-Host "Microsoft.Graph not installed. Installing latest (>= $MinimumVersion)..."
+        Install-Module -Name Microsoft.Graph -Scope $Scope -Force -AllowClobber -MinimumVersion $MinimumVersion
+        $updatePerformed = $true
+    }
+    elseif ($installed.Version -lt $MinimumVersion) {
+        Write-Host "Installed version $($installed.Version) is less than required $MinimumVersion. Updating..."
+        Uninstall-Module -Name Microsoft.Graph -AllVersions -Force
+        Install-Module -Name Microsoft.Graph -Scope $Scope -Force -AllowClobber -MinimumVersion $MinimumVersion
+        $updatePerformed = $true
+    }
+    else {
+        Write-Host "Microsoft.Graph $($installed.Version) is installed (meets requirement)."
+    }
+
+    if ($updatePerformed) {
+        Write-Host "Microsoft.Graph was updated or installed. Please restart your PowerShell session to load the new version cleanly." -ForegroundColor Yellow
+        exit 0
+    }
+}
+
+# Start Script Logic
+
+# Check if the Microsoft.Graph module is installed
+Test-MicrosoftGraphModule -MinimumVersion "2.28.0"
+
+# Import Required Modules
+Write-Host "Importing Required Modules..."
+Import-Module Microsoft.Graph.Authentication
+Import-Module Microsoft.Graph.Applications
+Import-Module Microsoft.Graph.Users
+Import-Module Microsoft.Graph.Identity.DirectoryManagement
+
 Write-Host $asciiLogo
 Write-Host "Use this script to create the app registration for all features in PowerSyncPro"
 Write-Host "Do not close this window until you have copied the App secret which will be produced at the end."
 
-
-# Check if the Microsoft.Graph module is installed
-Write-Host -ForegroundColor Cyan "Checking that correct Microsoft.Graph is installed"
-$requiredVersion = [version]"2.28.0"
-$installedModule = Get-Module -ListAvailable -Name Microsoft.Graph -ErrorAction SilentlyContinue
-
-if (-not $installedModule -or $installedModule.Version -lt $requiredVersion) {
-    Write-Output "Correct Microsoft.Graph version $requiredVersion module is not installed. Installing now..."
-    try {
-        # Install the Microsoft.Graph module
-        Install-Module -Name Microsoft.Graph -Scope AllUsers -Force -AllowClobber -RequiredVersion $requiredVersion
-        Write-Output "Microsoft.Graph module installed successfully."
-    } catch {
-        Write-Output "An error occurred during installation: $_"
-        exit
-    }
-} else {
-    Write-Output "Microsoft.Graph $requiredVersion module is already installed."
-}
-
 Write-Host -ForegroundColor Cyan "Creating App registration in your tenant called '$appName'"
 Write-Host "`n"
-Write-Host -ForegroundColor Cyan "First, enter the ID of the tenant you wish PowerSyncPro to connect to:"
-$tenantID = Read-Host
 
-$redirectUri = "http://localhost:5000/redirect" #  this should not be changed
-$termsOfServiceUrl = "https://downloads.powersyncpro.com/current/Declaration-Software-End-User-License-Agreement.pdf"
-$homepageurl = "https://powersyncpro.com/"
-$PrivacyStatementUrl  = "https://powersyncpro.com/privacy-policy/"
-$SupportUrl = "https://kb.powersyncpro.com"
-$requiredPermissions = @("Application.ReadWrite.All", "AppRoleAssignment.ReadWrite.All", "Organization.Read.All","User.Read")
+# If TenantID wasn’t provided, prompt for it
+if (-not $TenantID -or [string]::IsNullOrWhiteSpace($TenantID)) {
+    Write-Host -ForegroundColor Cyan "First, enter the ID of the tenant you wish PowerSyncPro to connect to:"
+    $TenantID = Read-Host
+}
 
 $currentgraphconnection = get-mgcontext
 if($currentgraphconnection -and $currentgraphconnection.tenantid -ne $tenantID){
@@ -158,7 +228,7 @@ $requiredResourceAccess = @{
 
  Write-Host -ForegroundColor Cyan "Creating PowerSyncPro application '$appName'"
 $app = New-MgApplication -DisplayName $appName -spa @{
-    RedirectUris = @($redirectUri)
+    RedirectUris = @($RedirectURI)
 } -Info @{
     PrivacyStatementUrl  = $PrivacyStatementUrl ;
     SupportUrl = $SupportUrl ;
@@ -229,8 +299,10 @@ Write-Output "Application name  : $appName"
 Write-Output "Tenant ID         : $tenantId"
 Write-Output "Application ID    : $clientId"
 Write-Output "Client Secret text: $clientSecret"
+Write-Output "Redirect URI      : $RedirectURI"
 Write-Output "`n"
 Write-Output "If creating a BPRT you must navigate the the URL $redirectUri (no other vanity name) to successfully create the token."
 Write-Output "`n"
 Write-Output "The script will now finish, please ensure you have saved the information above."
 pause
+
