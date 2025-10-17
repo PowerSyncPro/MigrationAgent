@@ -4,7 +4,7 @@
  
 .PARAMETERS
     -TenantID: Accepts a tenant ID GUID (e.g. abcdef12-3456-7890-1234-56789abcdef0)
-    -RedirectURI: Accepts a Redirect URL for PowerSyncPro Authentication - defaults to http://127.0.0.1:5000/redirect
+    -RedirectURI: Accepts a Redirect URL for PowerSyncPro Authentication - defaults to http://localhost:5000/redirect
 
 .NOTES
     Date            November/2024
@@ -25,7 +25,7 @@ param(
 
     # Set optional redirect URI, this should not be changed unless you are administering PSP from outside the local server
     [Parameter(Mandatory = $false)]
-    [string]$RedirectURI = "http://127.0.0.1:5000/redirect"
+    [string]$RedirectURI = "http://localhost:5000/redirect"
 )
 
 # Define application details
