@@ -1,21 +1,40 @@
-<#
+<#                                                                                           
+ mmmmm       mmmm              mmm   mm    mmmm    mmmmmmmm            mm    mm    mmmm    mmmmmmmm 
+ ##"""##    ##""##             ###   ##   ##""##   """##"""            ##    ##  m#""""#   ##"""""" 
+ ##    ##  ##    ##            ##"#  ##  ##    ##     ##               ##    ##  ##m       ##       
+ ##    ##  ##    ##            ## ## ##  ##    ##     ##               ##    ##   "####m   #######  
+ ##    ##  ##    ##            ##  #m##  ##    ##     ##               ##    ##       "##  ##       
+ ##mmm##    ##mm##             ##   ###   ##mm##      ##               "##mm##"  #mmmmm#"  ##mmmmmm 
+ """""       """"              ""   """    """"       ""                 """"     """""    """""""" 
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ mmmmmmmm  mmmmmm       mm      mmmmmm   mmm   mm   mmmmmm   mmm   mm     mmmm                      
+ """##"""  ##""""##    ####     ""##""   ###   ##   ""##""   ###   ##   ##""""#                     
+    ##     ##    ##    ####       ##     ##"#  ##     ##     ##"#  ##  ##                           
+    ##     #######    ##  ##      ##     ## ## ##     ##     ## ## ##  ##  mmmm                     
+    ##     ##  "##m   ######      ##     ##  #m##     ##     ##  #m##  ##  ""##                     
+    ##     ##    ##  m##  ##m   mm##mm   ##   ###   mm##mm   ##   ###   ##mmm##                     
+    ""     ""    """ ""    ""   """"""   ""   """   """"""   ""   """     """"                      
+                                                                                                    
+                                                                                                    
+                                                                                                    
+   mmmm    mmm   mm  mm       mmm    mmm                                                            
+  ##""##   ###   ##  ##        ##m  m##                                                             
+ ##    ##  ##"#  ##  ##         ##mm##                                                              
+ ##    ##  ## ## ##  ##          "##"                                                               
+ ##    ##  ##  #m##  ##           ##                                                                
+  ##mm##   ##   ###  ##mmmmmm     ##                                                                
+   """"    ""   """  """"""""     ""                                                                
+                                                                                                    
+                                                                                            
 .DESCRIPTION
     The script created the PowerSyncPro Entra ID app with all permissions related to Migration Agent and Directory Syncronisation
+    The script is for training only reffer to the script without -"training" in the name for the production script"
  
 .PARAMETERS
     -TenantID: Accepts a tenant ID GUID (e.g. abcdef12-3456-7890-1234-56789abcdef0)
     -RedirectURI: Accepts a Redirect URL for PowerSyncPro Authentication - defaults to http://localhost:5000/redirect
-
-.NOTES
-    Date            November/2024
-    Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 2.0
-    Updated: 17th Feb 2025, added check for federated account.
-    Updated: 19th May 2025, added Graph check, some earlier versions would put permissions into 'Other permissions granted for' instead of 'Configured permissions'
-    Updated: 19th June 2025, added ServicePrincipalLockConfiguration configuration
-    Updated: 29th Sept 2025, updated BPRT language
-    Updated: 30th Sept 2025, fixed SyncFabric checks, added warnings about not sharing tenant info with Support.
-    Updated: 8th Oct 2025, fixed logic with checking for installed Microsoft Graph version.  Added redirectURI flag handling.
 #>
 
 param(
@@ -29,7 +48,9 @@ param(
 )
 
 # Define application details
-$appName = "PowerSyncPro Dirsync and Migration Agent"
+$charSet = (48..57) + (65..90) + (97..122)
+$randomChars = -join ($charSet | Get-Random -Count 5 | ForEach-Object { [char]$_ })
+$appName = "PowerSyncPro Training Dirsync and MA - training $randomChars"
 $termsOfServiceUrl = "https://downloads.powersyncpro.com/current/Declaration-Software-End-User-License-Agreement.pdf"
 $homepageurl = "https://powersyncpro.com/"
 $PrivacyStatementUrl  = "https://powersyncpro.com/privacy-policy/"
@@ -119,6 +140,8 @@ Import-Module Microsoft.Graph.Users
 Import-Module Microsoft.Graph.Identity.DirectoryManagement
 
 Write-Host $asciiLogo
+Write-Host "You should only use this if you're a student in the powersyncpro training."
+Write-Host ""
 Write-Host "Use this script to create the app registration for all features in PowerSyncPro"
 Write-Host "Do not close this window until you have copied the App secret which will be produced at the end."
 
@@ -127,8 +150,13 @@ Write-Host "`n"
 
 # If TenantID wasn’t provided, prompt for it
 if (-not $TenantID -or [string]::IsNullOrWhiteSpace($TenantID)) {
-    Write-Host -ForegroundColor Cyan "First, enter the ID of the tenant you wish PowerSyncPro to connect to:"
-    $TenantID = Read-Host
+    Write-Host -ForegroundColor Cyan "Enter the ID of the tenant you wish PowerSyncPro to connect to:"
+    Write-Host -ForegroundColor Cyan "we have entered this for you."
+    Write-Host -ForegroundColor Cyan ""
+    Write-Host -ForegroundColor Cyan "bf94a801-31a5-43eb-a9b3-3f2bf1ad3f9e"
+    Write-Host -ForegroundColor Cyan ""
+    #$TenantID = Read-Host
+    $tenantID = "bf94a801-31a5-43eb-a9b3-3f2bf1ad3f9e"
 }
 
 $currentgraphconnection = get-mgcontext
@@ -295,11 +323,11 @@ Write-Host "`n"
 Write-Warning "This information is unique to your tenant and anyone with it can access your tenant."
 Write-Warning "If you run into issues with this script, please *DO NOT* share this information with PowerSyncPro Support."
 Write-Output "`n"
-Write-Output "Application name  : $appName"
-Write-Output "Tenant ID         : $tenantId"
-Write-Output "Application ID    : $clientId"
-Write-Output "Client Secret text: $clientSecret"
-Write-Output "Redirect URI      : $RedirectURI"
+Write-Output "Application name    : $appName"
+Write-Output "Training Tenant ID  : bf94a801-31a5-43eb-a9b3-3f2bf1ad3f9e < use this"
+Write-Output "Application ID      : $clientId"
+Write-Output "Client Secret text  : $clientSecret"
+Write-Output "Redirect URI        : $RedirectURI"
 Write-Output "`n"
 Write-Output "If creating a BPRT you must navigate the the URL $redirectUri (no other vanity name) to successfully create the token."
 Write-Output "`n"
