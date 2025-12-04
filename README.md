@@ -85,6 +85,14 @@ You may also want to modify this script to run it automatically periodically.
 
 https://kb.powersyncpro.com/migration-agent/bprt-is-the-owner-workstation-in-entra
 
+# PowerSyncPro Automated Installation Script (/AutoInstall_Script/)
+
+The PowerSyncPro Automated Installation Script enables rapid deployment of a fully functional PowerSyncPro instance — ready to synchronize directories and migrate workstations.
+
+You can find more information about the script, including usage instructions on our KB:
+https://kb.powersyncpro.com/en_US/install-and-configure/powersyncpro-automated-installation-script
+
+
 
 
 
