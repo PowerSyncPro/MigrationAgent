@@ -56,13 +56,13 @@ $ScriptFolder = "C:\Scripts"
 # Scripts to Drop (Github Links)
 # Certificate Puller Script, used to pull certificates via LetsEncrypt / ACME
 $CertPullerScriptName = "Cert-Puller_PoshACME.ps1"
-$CertPullerURL = "https://raw.githubusercontent.com/jrichardpsp/psp-autoinstall-beta/refs/heads/main/Cert-Puller_PoshACME.ps1"
+$CertPullerURL = "https://raw.githubusercontent.com/PowerSyncPro/MigrationAgent/refs/heads/main/AutoInstall_Script/Cert-Puller_PoshACME.ps1"
 # Certificate Renewer Script, used to manually replace a certificate on a PSP install
 $CertRenewerScriptName = "Cert-Renewer.ps1"
-$CertRenewerURL = "https://raw.githubusercontent.com/jrichardpsp/psp-autoinstall-beta/refs/heads/main/Cert-Renewer.ps1"
+$CertRenewerURL = "https://raw.githubusercontent.com/PowerSyncPro/MigrationAgent/refs/heads/main/AutoInstall_Script/Cert-Renewer.ps1"
 # WebConfig Editor - Used to update reverse proxy allowed IPs and proxy rewrite URL.
 $WebConfigScriptName = "WebConfig_Editor.ps1"
-$WebConfigScriptURL = "https://raw.githubusercontent.com/jrichardpsp/psp-autoinstall-beta/refs/heads/main/WebConfig_Editor.ps1"
+$WebConfigScriptURL = "https://raw.githubusercontent.com/PowerSyncPro/MigrationAgent/refs/heads/main/AutoInstall_Script/WebConfig_Editor.ps1"
 
 # Web.Config Information
 $WebConfigName = "web.config"
@@ -2476,40 +2476,6 @@ function Test-AndFixCertPermissions {
         return $false
     }
 }
-# ------------------ Menu & UI ------------------
-function Show-CertificateTypeMenu {
-    Clear-Host 2>$null
-    Write-Host $asciiLogo -ForegroundColor Cyan
-    Write-Host "PowerSyncPro Automated Installation Script - $scriptVer"
-    Write-Host ""
-    Write-Host "Which type of certificate would you like to use for this installation?" -ForegroundColor Cyan
-    Write-Host ""
-    $options = @(
-        @{ Key = '1'; Name = 'LetsEncrypt'; Desc = 'ACME via DNS Verification' }
-        @{ Key = '2'; Name = 'BYOC';        Desc = 'Bring Your Own Certificate (PFX with Private Keys Required)' }
-        @{ Key = '3'; Name = 'SelfSigned';  Desc = 'Generate a Self-Signed Certificate (May cause loss of functionality)' }
-    )
-    foreach ($o in $options) {
-        Write-Host ("  [{0}] {1} - {2}" -f $o.Key, $o.Name, $o.Desc)
-    }
-    Write-Host ""
-    Write-Host "  (Press Enter for default: 1 = LetsEncrypt; or type the name, e.g., 'byoc'. Type Q to quit.)"
-    Write-Host ""
-
-    while ($true) {
-        $raw = Read-Host "Select 1-3, name, or Q"
-        $raw = if ([string]::IsNullOrWhiteSpace($raw)) { '1' } else { $raw.Trim() }
-        switch -regex ($raw) {
-            '^(1|letsencrypt)$' { return 'LetsEncrypt' }
-            '^(2|byoc|bring.*)$' { return 'BYOC' }
-            '^(3|self.*)$' { return 'SelfSigned' }
-            '^(q|quit|exit)$' {
-                                throw "User cancelled the wizard."
-                            }
-            default { Write-Host "Invalid selection. Try again." -ForegroundColor Yellow }
-        }
-    }
-}
 function Test-UserCredential {
     <#
     .SYNOPSIS
@@ -2561,6 +2527,40 @@ function Test-UserCredential {
     } else {
         Err "Invalid username or password."
         $false
+    }
+}
+# ------------------ Menu & UI ------------------
+function Show-CertificateTypeMenu {
+    Clear-Host 2>$null
+    Write-Host $asciiLogo -ForegroundColor Cyan
+    Write-Host "PowerSyncPro Automated Installation Script - $scriptVer"
+    Write-Host ""
+    Write-Host "Which type of certificate would you like to use for this installation?" -ForegroundColor Cyan
+    Write-Host ""
+    $options = @(
+        @{ Key = '1'; Name = 'LetsEncrypt'; Desc = 'ACME via DNS Verification' }
+        @{ Key = '2'; Name = 'BYOC';        Desc = 'Bring Your Own Certificate (PFX with Private Keys Required)' }
+        @{ Key = '3'; Name = 'SelfSigned';  Desc = 'Generate a Self-Signed Certificate (May cause loss of functionality)' }
+    )
+    foreach ($o in $options) {
+        Write-Host ("  [{0}] {1} - {2}" -f $o.Key, $o.Name, $o.Desc)
+    }
+    Write-Host ""
+    Write-Host "  (Press Enter for default: 1 = LetsEncrypt; or type the name, e.g., 'byoc'. Type Q to quit.)"
+    Write-Host ""
+
+    while ($true) {
+        $raw = Read-Host "Select 1-3, name, or Q"
+        $raw = if ([string]::IsNullOrWhiteSpace($raw)) { '1' } else { $raw.Trim() }
+        switch -regex ($raw) {
+            '^(1|letsencrypt)$' { return 'LetsEncrypt' }
+            '^(2|byoc|bring.*)$' { return 'BYOC' }
+            '^(3|self.*)$' { return 'SelfSigned' }
+            '^(q|quit|exit)$' {
+                                throw "User cancelled the wizard."
+                            }
+            default { Write-Host "Invalid selection. Try again." -ForegroundColor Yellow }
+        }
     }
 }
 # ------------------ Wizard Core ------------------
