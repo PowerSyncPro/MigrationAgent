@@ -92,6 +92,10 @@ The PowerSyncPro Automated Installation Script enables rapid deployment of a ful
 You can find more information about the script, including usage instructions on our KB:
 https://kb.powersyncpro.com/en_US/install-and-configure/powersyncpro-automated-installation-script
 
+# PSP-CreateMST.ps1
+
+Creates an MST (transform) file for an MSI by injecting a PSK and target URLinto the MSI's Property table—without modifying the original MSI.
+
 
 
 
