@@ -48,8 +48,16 @@ param(
 )
 
 # Define application details
-$charSet = (48..57) + (65..90) + (97..122)
-$randomChars = -join ($charSet | Get-Random -Count 5 | ForEach-Object { [char]$_ })
+
+$serverName = $env:COMPUTERNAME  # Or use [System.Environment]::MachineName
+
+# Match trailing digits
+if ($serverName -match '\d+$') {
+    $trailingNumber = $Matches[0]
+    $randomChars="Env$trailingNumber"
+}
+#$charSet = (48..57) + (65..90) + (97..122)
+#$randomChars = -join ($charSet | Get-Random -Count 5 | ForEach-Object { [char]$_ })
 $appName = "PowerSyncPro Training Dirsync and MA - training $randomChars"
 $termsOfServiceUrl = "https://downloads.powersyncpro.com/current/Declaration-Software-End-User-License-Agreement.pdf"
 $homepageurl = "https://powersyncpro.com/"
@@ -289,11 +297,21 @@ $Roles = $requiredResourceAccess.ResourceAccess.id
 
 #Get SP for Graph, granting admin consent
 $TargetSP = Get-MgServicePrincipal -Filter "AppId eq '00000003-0000-0000-c000-000000000000'"
-foreach($Role in ($Roles | ? {$_ -ne "dc50a0fb-09a3-484d-be87-e023b12c6440"})){
-    New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $SP.id -PrincipalId $SP.id -ResourceId $TargetSP.id -AppRoleId $Role  -ErrorAction "stop" | Out-Null
+
+foreach($Role in ($Roles | Where-Object {$_ -ne "dc50a0fb-09a3-484d-be87-e023b12c6440"})){
+try {
+New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $SP.Id -PrincipalId $SP.Id -ResourceId $TargetSP.Id -AppRoleId $Role -ErrorAction Stop | Out-Null
+} catch {
+Write-Host -ForegroundColor Yellow "Failed to assign role $Role  due to 403 error - continuing..."
+}
 }
 
+#foreach($Role in ($Roles | ? {$_ -ne "dc50a0fb-09a3-484d-be87-e023b12c6440"})){
+#    New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $SP.id -PrincipalId $SP.id -ResourceId $TargetSP.id -AppRoleId $Role  -ErrorAction "stop" | Out-Null
+#}
+
 #Get SP for Exchange, granting admin consent
+Write-Host -ForegroundColor Cyan "Adding exchange consent '$appName'"
 $TargetSP = Get-MgServicePrincipal -Filter "AppId eq '00000002-0000-0ff1-ce00-000000000000'"
 New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId $SP.id -PrincipalId $SP.id -ResourceId $TargetSP.id -AppRoleId "dc50a0fb-09a3-484d-be87-e023b12c6440" -ErrorAction "stop" | Out-Null
 
@@ -332,5 +350,7 @@ Write-Output "`n"
 Write-Output "If creating a BPRT you must navigate the the URL $redirectUri (no other vanity name) to successfully create the token."
 Write-Output "`n"
 Write-Output "The script will now finish, please ensure you have saved the information above."
+Write-Output "`n"
+Write-Output "Ask your trainer to grant admin consent."
 pause
 
