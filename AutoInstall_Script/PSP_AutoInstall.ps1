@@ -4,10 +4,11 @@
     This script will download various content from Microsoft, PowerSyncPro, and the PowerSyncPro Github.
  
 .NOTES
-    Date            December/2025
+    Date            January/2026
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 0.1
-    Updated: Initial Public Release.
+    Version: 0.2
+    Updated : 9th January, 2026 - Added logic to handle installing with existing SQL instances on system, SQL Express 2025, fixed a bug where VC++ install would cause script failure. JRR
+    Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
     Copyright (c) 2025 Declaration Software
 #>
 
@@ -21,13 +22,21 @@ param (
     [string]$PSPServiceUser = $null,
 
     # Optional Service Account Password (plain text for MSI use)
-    [string]$PSPServicePassword = $null
+    [string]$PSPServicePassword = $null,
+    
+    # Run Prereqs Only, don't install PowerSyncPro (Advanced Installs Only)
+    # --> Sets up pre-requisite software (including SQL, etc)
+    [switch]$PreReqOnly = $false,
+
+    # Run completion only - for after manually installing PSP (Advanced Installs Only)
+    # --> Completes SSL Setup, Hardens Server, Installs Certificate
+    [switch]$CompletionOnly = $false
 )
 
 Set-StrictMode -Version Latest
 
 # General Variables
-$scriptVer = "v0.1"
+$scriptVer = "v0.2"
 
 $tempDir = "C:\Temp" # Temporary Directory for Downloads, etc.
 $LogPath = "C:\Temp\PSP_AutoInstall.txt" # Logging Location
@@ -39,11 +48,10 @@ $metadataUrl = "https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/
 # VC Redistributable Variables
 $vcDownloadURL = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
 
-# SQL 2022 Bootstrapper / Downloader
-$SQLBootstrapperUrl = "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe"
+# SQL 2025 Bootstrapper / Downloader
+$SQLBootstrapperUrl = "https://download.microsoft.com/download/7ab8f535-7eb8-4b16-82eb-eca0fa2d38f3/SQL2025-SSEI-Expr.exe"
 # SQL Suite Management Studio
 $SsmsUrl = "https://aka.ms/ssmsfullsetup"
-### $ExpectedSQLServiceName = 'MSSQL$SQLEXPRESS'
 
 # IIS URL Rewrite
 $RewriteUrl = "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi"
@@ -228,7 +236,8 @@ function Install-VCRedistributable {
       -ArgumentList "/quiet", "/norestart" `
       -Verb RunAs -Wait -PassThru
 
-  if ($proc.ExitCode -ne 0) {
+  Info "VC++ Redistributable install finished with exit code $($proc.ExitCode)"
+  if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010 -and $proc.ExitCode -ne 1641) {
       throw "VC++ Redistributable install failed with exit code $($proc.ExitCode)"
   }
 
@@ -298,7 +307,8 @@ function Test-VCRedistributable {
         return $false
     }
 }
-function Install-SQLExpress2022 {
+function Install-SQLExpress {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$BootstrapperUrl,
@@ -306,12 +316,15 @@ function Install-SQLExpress2022 {
         [Parameter(Mandatory = $true)]
         [string]$tempDir,
 
+        [Parameter(Mandatory = $true)]
+        [string]$InstanceName,
+
         [Parameter(Mandatory = $false)]
         [string]$SQLAdminsGroup = $null
     )
 
     <#
-        Automated SQL Server 2022 Express Install
+        Automated SQL Server Express Install
         -----------------------------------------
         - Downloads and extracts SQL Express setup media
         - Performs unattended install
@@ -321,34 +334,49 @@ function Install-SQLExpress2022 {
         - Verifies SQL service health
     #>
 
-    $DownloadDir = Join-Path $tempDir "SQL2022"
-    $MediaDir    = Join-Path $DownloadDir "Media"
     $ErrorActionPreference = "Stop"
 
-    Info "Installing SQL Server 2022 Express..."
+    # If instance already exists, skip install
+    $existingSvc = Test-SqlInstanceService -InstanceName $InstanceName
+    if ($existingSvc) {
+        Warn ("SQL instance '{0}' already exists. Skipping SQL Express installation." -f $InstanceName)
 
-    foreach ($d in @($DownloadDir, $MediaDir)) {
-        if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
+        if ($existingSvc.Status -ne 'Running') {
+            if (Confirm-YesNo -Message ("Service is {0}. Start it now" -f $existingSvc.Status)) {
+                Start-Service -Name $existingSvc.Name -ErrorAction Stop
+                $existingSvc.WaitForStatus('Running','00:00:20')
+            }
+        }
+        return
     }
 
-    # --- Download bootstrapper ---
-    $bootstrapperExe = Join-Path $DownloadDir "SQL2022-SSEI-Expr.exe"
-    Info "Downloading SQL Server Express bootstrapper from $BootstrapperUrl ..."
+    $DownloadDir = Join-Path $tempDir "SQL"
+    $MediaDir    = Join-Path $DownloadDir "Media"
+
+    Info ("Installing SQL Server Express instance '{0}'..." -f $InstanceName)
+
+    foreach ($d in @($DownloadDir, $MediaDir)) {
+        if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    # Download bootstrapper
+    $bootstrapperExe = Join-Path $DownloadDir "SQL-SSEI-Expr.exe"
+    Info ("Downloading SQL Server Express bootstrapper from {0} ..." -f $BootstrapperUrl)
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri $BootstrapperUrl -OutFile $bootstrapperExe
-    Info "Downloaded bootstrapper to $bootstrapperExe"
+    Info ("Downloaded bootstrapper to {0}" -f $bootstrapperExe)
 
-    # --- Download full install media ---
+    # Download full install media
     Info "Fetching installation media..."
-    $bootstrapperCmd = "`"$bootstrapperExe`" /ACTION=Download /MEDIAPATH=$MediaDir /QUIET"
+    $bootstrapperCmd = "`"$bootstrapperExe`" /ACTION=Download /MEDIAPATH=`"$MediaDir`" /QUIET"
     Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile","-Command",$bootstrapperCmd -Verb RunAs -Wait
 
-    # --- Locate setup executable ---
+    # Locate setup executable
     $setupExe = Get-ChildItem -Path $MediaDir -Recurse -Filter "SQLEXPR*.exe" | Select-Object -First 1
-    if (-not $setupExe) { throw "Could not find SQL Server Express setup executable in $MediaDir" }
-    Info "Found setup executable: $($setupExe.FullName)"
+    if (-not $setupExe) { throw ("Could not find SQL Server Express setup executable in {0}" -f $MediaDir) }
+    Info ("Found setup executable: {0}" -f $setupExe.FullName)
 
-    # --- Build sysadmin accounts string ---
+    # Build sysadmin accounts string
     if (-not [string]::IsNullOrWhiteSpace($SQLAdminsGroup)) {
         $sysAdminsArg = "/SQLSYSADMINACCOUNTS=`"$SQLAdminsGroup`""
     }
@@ -356,9 +384,9 @@ function Install-SQLExpress2022 {
         $sysAdminsArg = '/SQLSYSADMINACCOUNTS="BUILTIN\Administrators"'
     }
 
-    Info "Installing SQL Server Express with sysadmin accounts: $sysAdminsArg"
+    Info ("Installing SQL Server Express with sysadmin accounts: {0}" -f $sysAdminsArg)
 
-    # --- Build installer arguments ---
+    # Build installer arguments
     $SqlArgs = @(
         "/ENU=True",
         "/ROLE=AllFeatures_WithDefaults",
@@ -366,137 +394,40 @@ function Install-SQLExpress2022 {
         "/FEATURES=SQLENGINE,REPLICATION",
         "/USEMICROSOFTUPDATE=True",
         "/UpdateSource=MU",
-        "/INSTANCENAME=SQLEXPRESS",
+        ("/INSTANCENAME={0}" -f $InstanceName),
         $sysAdminsArg,
         "/TCPENABLED=1",
         "/IACCEPTSQLSERVERLICENSETERMS",
         "/QS"
     )
 
-    # --- Debug Output ---
-    #Write-Host "[DEBUG] Full args:`n$($SqlArgs -join ' ')" -ForegroundColor Yellow
-
-    # --- Execute installer ---
+    # Execute installer
     Start-Process -FilePath $setupExe.FullName -ArgumentList $SqlArgs -Verb RunAs -Wait
 
-    # --- Verify SQL service ---
-    $serviceName = "MSSQL`$SQLEXPRESS"
+    # Verify SQL service exists and is running
+    $serviceName = if ($InstanceName -eq "MSSQLSERVER") { "MSSQLSERVER" } else { "MSSQL`$$InstanceName" }
     $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
-    if ($null -eq $service) {
+    if (-not $service) {
         Err "SQL Server Express service not found. Installation may have failed."
         exit 1
     }
-    elseif ($service.Status -ne 'Running') {
+
+    if ($service.Status -ne 'Running') {
         Warn "SQL Server Express service is installed but not running. Attempting to start..."
         try {
             Start-Service -Name $serviceName -ErrorAction Stop
+            $service.WaitForStatus('Running','00:00:20')
             Ok "SQL Server Express service started successfully."
         }
         catch {
-            Err "Failed to start SQL Server Express service. Error: $_"
+            Err ("Failed to start SQL Server Express service. Error: {0}" -f $_)
             exit 1
         }
     }
     else {
         Ok "SQL Server Express service is running."
-        Ok "SQL Server 2022 Express installed successfully."
-    }
-}
-function Test-SqlExpressInstalled {
-    <#
-    .SYNOPSIS
-        Checks if Microsoft SQL Server Express is installed.
-
-    .OUTPUTS
-        [bool] True if SQL Express is installed, False if not.
-    #>
-    [CmdletBinding()]
-    param()
-
-    $basePaths = @(
-        "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL"
-    )
-
-    $expressInstances = @()
-
-    foreach ($path in $basePaths) {
-        if (Test-Path $path) {
-            $instanceMap = Get-ItemProperty $path
-            foreach ($prop in $instanceMap.PSObject.Properties) {
-                $instanceName = $prop.Name
-                $instanceId   = $prop.Value
-
-                $setupKey = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\Setup"
-                if (Test-Path $setupKey) {
-                    $setup = Get-ItemProperty $setupKey
-                    if ($setup.Edition -like "*Express*") {
-                        $expressInstances += [PSCustomObject]@{
-                            Instance = $instanceName
-                            Edition  = $setup.Edition
-                            Version  = $setup.Version
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if ($expressInstances.Count -gt 0) {
-        Ok "SQL Server Express is installed:"
-        $expressInstances | ForEach-Object {
-            Write-Host " - Instance: $($_.Instance), Edition: $($_.Edition), Version: $($_.Version)"
-        }
-        return $true
-    }
-    else {
-        Warn "No SQL Server Express instances found."
-        return $false
-    }
-}
-function Test-SqlServerInstalled {
-    <#
-    .SYNOPSIS
-        Detects full (non-Express) SQL Server installations.
-    #>
-    try {
-        $found = $false
-        $instanceKeyPaths = @(
-            'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL',
-            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL'
-        )
-
-        foreach ($keyPath in $instanceKeyPaths) {
-            if (Test-Path $keyPath) {
-                $instances = Get-ItemProperty $keyPath | Select-Object -ExcludeProperty PS* | ForEach-Object {
-                    $_.PSObject.Properties | ForEach-Object {
-                        [PSCustomObject]@{
-                            Name  = $_.Name
-                            Value = $_.Value
-                        }
-                    }
-                }
-
-                foreach ($inst in $instances) {
-                    $editionKey = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$($inst.Value)\Setup"
-                    if (Test-Path $editionKey) {
-                        $edition = (Get-ItemProperty $editionKey -ErrorAction SilentlyContinue).Edition
-                        if ($edition -and ($edition -notmatch 'Express')) {
-                            Ok "Detected full SQL Server instance: $($inst.Name) ($edition)"
-                            return $true
-                        }
-                    }
-                }
-            }
-        }
-
-        Warn "No full SQL Server instance detected."
-        return $false
-    }
-    catch {
-        Warn "Error while checking for SQL Server: $($_.Exception.Message)"
-        return $false
+        Ok "SQL Server Express installed successfully."
     }
 }
 function Install-SSMS {
@@ -1831,6 +1762,21 @@ function Register-CertRenewalScheduledTask {
     Ok "Scheduled task '$taskName' created/updated successfully." -ForegroundColor Green
 }
 # ------------------ Helper Functions ------------------
+function Confirm-YesNo {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Message)
+
+    while ($true) {
+        $r = Read-Host "$Message [Y/N]"
+        switch ($r.ToUpper()) {
+            "Y" { return $true }
+            "YES" { return $true }
+            "N" { return $false }
+            "NO" { return $false }
+            default { Warn "Please enter Y or N." }
+        }
+    }
+}
 function Get-PfxSubject {
     param (
         [string]$PfxPath,
@@ -2341,6 +2287,200 @@ function Test-SqlInstanceService {
     catch {
         Err "Error checking for SQL instance '$InstanceName': $($_.Exception.Message)"
         return $null
+    }
+}
+function Select-SqlTarget {
+    <#
+    # Updated to handle External Logic to collect information for external servers when in CompletionOnly Mode
+    .SYNOPSIS
+        Presents detected local SQL Server instances and allows the user to select
+        a target for the PowerSyncPro database, including support for external SQL servers
+        and optional SQL Express installation.
+
+    .DESCRIPTION
+        This function displays all SQL Server instances discovered on the local system
+        using Get-LocalSqlInstances and prompts the user to select where the PowerSyncPro
+        database should be hosted.
+
+        When running in normal installation mode, the user may choose:
+        - An existing local SQL Server instance
+        - A new SQL Express instance to be installed
+        - An external SQL Server
+
+        When running in CompletionOnly mode, installation of new SQL Express instances
+        is disabled and only existing local instances or an external SQL Server may be selected.
+
+        The function returns an object describing the selected mode, instance details,
+        and whether an external SQL server is in use.
+
+    .OUTPUTS
+        PSCustomObject with properties:
+        - Mode (Existing, External, InstallExpress)
+        - Instance (when applicable)
+        - NewInstanceName (when applicable)
+        - ExternalServerInUse (Boolean)
+
+    .NOTES
+        Designed for use in PowerSyncPro installation and recovery workflows.
+        Compatible with Windows PowerShell 5.1 and uses ASCII-only characters.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Instances,
+
+        [bool]$CompletionOnly = $false,
+        [bool]$PreReqOnly = $false
+    )
+
+    $Instances = @($Instances)
+
+    Info "Detected local SQL instances:"
+
+    if ($Instances.Count -eq 0) {
+        Warn "No local SQL instances were detected."
+    }
+    else {
+        for ($i = 0; $i -lt $Instances.Count; $i++) {
+            $inst = $Instances[$i]
+
+            $typeText    = if ($inst.IsExpress) { "Express" } else { "Full" }
+            $versionText = if ([string]::IsNullOrWhiteSpace($inst.Version)) { "Unknown" } else { $inst.Version }
+
+            Write-Host ("[{0}] {1} ({2}) Version: {3}" -f ($i + 1), $inst.Instance, $typeText, $versionText) -ForegroundColor Gray
+        }
+    }
+
+    $nextOption = $Instances.Count + 1
+
+    $optExternal = $null
+    $optInstall  = $null
+
+    # External SQL only appears in CompletionOnly mode
+    if ($CompletionOnly) {
+        $optExternal = $nextOption
+        Write-Host ("[{0}] PowerSyncPro is using an EXTERNAL SQL Server" -f $optExternal) -ForegroundColor Gray
+        $nextOption++
+    }
+
+    # SQL Express install only appears in normal install mode
+    if (-not $CompletionOnly) {
+        $optInstall = $nextOption
+        Write-Host ("[{0}] Install a NEW SQL Express instance" -f $optInstall) -ForegroundColor Gray
+        if (-not $PreReqOnly ) {
+            Warn "IMPORTANT: The account running this installer must have permission to create databases on the chosen instance."
+        }
+        else {
+            Warn "Script Running PreReq Only Mode: Please select the database you plan to use, or install a new copy of SQL Express."
+        }
+        $nextOption++
+    }
+
+    while ($true) {
+        $choice = Read-Host ("Select an option [1-{0}]" -f ($nextOption - 1))
+
+        $n = 0
+        if ([int]::TryParse($choice, [ref]$n)) {
+
+            # Existing local instance
+            if ($n -ge 1 -and $n -le $Instances.Count) {
+                return [PSCustomObject]@{
+                    Mode               = "Existing"
+                    Instance           = $Instances[$n - 1]
+                    InstanceName       = $Instances[$n -1].Instance
+                    ExternalServerInUse = $false
+                }
+            }
+
+            # External SQL Server
+            if ($n -eq $optExternal) {
+                return [PSCustomObject]@{
+                    Mode               = "External"
+                    Instance           = $null
+                    ExternalServerInUse = $true
+                }
+            }
+
+            # Install SQL Express
+            if (-not $CompletionOnly -and $n -eq $optInstall) {
+                $newName = Read-InstanceName -Default "SQLEXPRESS"
+                return [PSCustomObject]@{
+                    Mode               = "InstallExpress"
+                    NewInstanceName    = $newName
+                    Instance           = $null
+                    ExternalServerInUse = $false
+                }
+            }
+        }
+
+        Warn "Invalid selection."
+    }
+}
+function Get-LocalSqlInstances {
+    [CmdletBinding()]
+    param()
+
+    $keyPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\Instance Names\SQL",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server\Instance Names\SQL"
+    )
+
+    $all = @()
+
+    foreach ($keyPath in $keyPaths) {
+        if (-not (Test-Path $keyPath)) { continue }
+
+        $instanceMap = Get-ItemProperty $keyPath
+        foreach ($prop in $instanceMap.PSObject.Properties) {
+
+            $psMetaProps = @('PSPath','PSParentPath','PSChildName','PSDrive','PSProvider')
+            if ($psMetaProps -contains $prop.Name) { continue }
+
+            $instanceName = $prop.Name
+            $instanceId   = $prop.Value
+
+            $setupKey = "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$instanceId\Setup"
+            $edition  = $null
+            $version  = $null
+
+            if (Test-Path $setupKey) {
+                $setup = Get-ItemProperty $setupKey -ErrorAction SilentlyContinue
+                if ($setup) {
+                    $edition = $setup.Edition
+                    $version = $setup.Version
+                }
+            }
+
+            $isExpress = $false
+            if ($edition -and ($edition -match "Express")) { $isExpress = $true }
+
+            $all += [PSCustomObject]@{
+                Instance  = $instanceName
+                Edition   = $edition
+                Version   = $version
+                IsExpress = $isExpress
+            }
+        }
+    }
+
+    $all | Sort-Object Instance -Unique
+}
+function Read-InstanceName {
+    [CmdletBinding()]
+    param(
+        [string]$Prompt  = "Enter new SQL Express instance name",
+        [string]$Default = "SQLEXPRESS"
+    )
+
+    while ($true) {
+        $name = Read-Host "$Prompt [$Default]"
+        if ([string]::IsNullOrWhiteSpace($name)) { $name = $Default }
+
+        # letters/numbers/underscore only (safe for service names, etc.)
+        if ($name -match '^[A-Za-z0-9_]+$') { return $name }
+
+        Warn "Invalid instance name. Use letters, numbers, and underscore only."
     }
 }
 function New-LocalSqlAdminsGroup {
@@ -2855,7 +2995,25 @@ Register-EngineEvent PowerShell.Exiting -Action {
 } | Out-Null
 
 try{
-   # Validate Service Credentials
+    $ErrorActionPreference = "Stop"
+    $ExternalServerInUse = $false
+
+    # Evaluate CLI Flags
+    # Eval Prerequisite / CLI Flags Flags
+    if ($PreReqOnly -and $CompletionOnly) {
+        Err "You cannot run both Prequisites and Completion at the same time... Exiting."
+        exit 1
+    }
+
+    # Cannot use the PSPServiceUser / PSPServicePassword flags with the PreReqOnly or CompletionOnly flags.
+    if ( ($PreReqOnly -or $CompletionOnly) -and
+     (-not [string]::IsNullOrWhiteSpace($PSPServiceUser) -or
+      -not [string]::IsNullOrWhiteSpace($PSPServicePassword)) ) {
+        Err "-PreReq and -Completion Flags are not compatible with Service Accounts... Exiting."
+        exit 1
+    }
+
+    # Validate Service Credentials
     if ($PSPServiceUser -and -not $PSPServicePassword) {
         Err "ERROR: You provided -PSPServiceUser but did not specify -PSPServicePassword."
         exit 1
@@ -2866,530 +3024,630 @@ try{
         exit 1
     }
 
-    # Expand .\username into HOSTNAME\username if needed
-    if ($PSPServiceUser -like '.\*') {
-        $hostname = $env:COMPUTERNAME
-        $PSPServiceUser = $PSPServiceUser -replace "^\.\\", "$env:COMPUTERNAME\"
-        Info "Expanded local user reference to: $PSPServiceUser"
+    # Notify that script will be run in PreReq Only Mode, we will do everything up to installing PSP.
+    if ($PreReqOnly) {
+        $asciiLogo
+        Info "Installing PowerSyncPro Installation Prequisites Only."
+        Info "After manually installing the MSI, you can complete the certificate installation and hardening using the -CompletionOnly flag."
+        Start-Sleep 5
     }
 
-    # Validate Name Format
-    if ($PSPServiceUser) {
-        # Acceptable formats:
-        #   DOMAIN\User
-        #   HOSTNAME\User
-        $userPattern = '^[A-Za-z0-9_-]+\\[A-Za-z0-9._$-]+$'
-
-        if ($PSPServiceUser -notmatch $userPattern) {
-            Err "ERROR: Invalid service account format. Use DOMAIN\Username or .\Username"
+    # Notify that the script will be run in Completion Only Mode, we will do everything *after* the PSP installation.
+    if ($CompletionOnly) {
+        Info "Script is running in Completion Only mode, PowerSyncPro should be already installed and running..."
+        Info "Completing hardening and certificate installation on server."
+        # Make sure PSP is running - we cannot complete the install if it isn't yet installed.
+        if (-not (Test-PowerSyncPro)) {
+            Warn "PowerSyncPro Service is not running on this system.  You cannot complete the installation if PowerSyncPro is not installed and running."
             exit 1
         }
-    }
 
-    # Let script know whether we're using a specific service account / check credentials
-    if (-not [string]::IsNullOrWhiteSpace($PSPServiceUser)) {
-        # Check if the provided service account creds are good.
-        if (Test-UserCredential -Username $PSPServiceUser -Password $PSPServicePassword) {
-            $UseServiceAccount = $true
-            Ok "We are using a specific service account, $PSPServiceUser to install PowerSyncPro..."
-            Warn "This service account must have access to your database or installation may fail."
-            Start-Sleep 2
+        # Determine the SQL instance that was used for the previous PSP install.
+        Info "Collecting SQL Information for existing PowerSyncPro installation..."
+        # Get all Installed Instances
+        $instances = @(Get-LocalSqlInstances)
+        # Ask user to select an instance (or no instance)
+        $SqlServices = Select-SqlTarget -Instances $instances -CompletionOnly $true
+        $ExternalServerInUse = $SqlServices.ExternalServerInUse
+        $SqlInstance = $SqlServices.InstanceName
+
+        if (-not $ExternalServerInUse) {
+            Info "Running completion with $SqlInstance.Name as assumed SQL Instance for existing installation..."
         }
         else {
-            Err "Service account credentials provided are invalid, please test and attempt install again."
-            exit 1
-        }
-    }
-    else {
-        $UseServiceAccount = $false
-    }
-
-    $ErrorActionPreference = "Stop"
-
-    # Test if PowerSyncPro is running, if it is we should immediately bail out.
-    if (Test-PowerSyncPro) {
-        Warn "PowerSyncPro Service is already installed or running on this system. Aborting installation script."
-        exit 1
-    }
-
-    # Test if machine is a server - we shouldn't run on non-server OS and versions under 2016.
-    Ok "PowerSyncPro Service is *not* present or running - continuing installation..."
-
-    if (-not (Test-IsServer2016OrNewer)) {
-        Err "This operating system is not supported. Windows Server 2016 or newer is required."
-        exit 1   # stops the script with an error code
-    }
-
-    Ok "OS check passed - continuing installation..."
-
-    # -----------------------------------
-    # Detect SQL Engine (Full vs Express)
-    # -----------------------------------
-    $UseSqlExpress = $true
-    if (Test-SqlServerInstalled) {
-        Ok "Full SQL Server detected. Skipping SQL Express installation."
-        $UseSqlExpress = $false
-    }
-    
-    if (-not $UseSqlExpress) {
-    $validInstance = $false
-
-    while (-not $validInstance) {
-        Info "Please provide Local SQL Server connection details."
-
-        $SqlAddress = Read-Host "Enter SQL Server Address [localhost]"
-        if ([string]::IsNullOrWhiteSpace($SqlAddress)) { $SqlAddress = "localhost" }
-
-        $SqlPort = Read-Host "Enter SQL Port [1433]"
-        if ([string]::IsNullOrWhiteSpace($SqlPort)) { $SqlPort = "1433" }
-
-        $SqlInstance = Read-Host "Enter SQL Instance name [Default (e.g MSSQLSERVER) is Blank]"
-        if ([string]::IsNullOrWhiteSpace($SqlInstance)) { $SqlInstance = "MSSQLSERVER" }
-
-        $SqlDatabase = Read-Host "Enter PowerSyncPro database name [PowerSyncProDB]"
-        if ([string]::IsNullOrWhiteSpace($SqlDatabase)) { $SqlDatabase = "PowerSyncProDB" }
-
-        Write-Host ""
-        Info "Using the following SQL configuration:"
-        Write-Host "  Address : $SqlAddress" -ForegroundColor Gray
-        Write-Host "  Port    : $SqlPort" -ForegroundColor Gray
-        if ($SqlInstance -eq "MSSQLSERVER") {
-            Write-Host "  Instance: Default (MSSQLSERVER)" -ForegroundColor Gray
-        } else {
-            Write-Host "  Instance: $SqlInstance" -ForegroundColor Gray
-        }
-        Write-Host "  DB Name : $SqlDatabase" -ForegroundColor Gray
-        Write-Host ""
-
-        # Check instance
-        $validInstance = Test-SqlInstanceService -InstanceName $SqlInstance
-
-        if (-not $validInstance) {
-            Write-Host ""
-            Warn "That SQL instance does not appear to be valid, please try again."
-            Write-Host ""
+            Info "Running completion assuming an external SQL server is in use."
         }
     }
 
-    Ok "SQL Instance verified successfully. Continuing checks..."
-    Start-Sleep 1
-}
-else {
-    Info "No full SQL Server found. SQL Express will be used."
-}
-    # Test if Ports we require during the installation are in-use.  Bail out if conflicts occur.
-    # Define which ports to check
-    $checkPorts = 80,443,5000,5001
-    $noConflicts = $false
+    # Service Account Tasks - Only if not in PreReq / Completion Only Mode
+    if (-not $PreReqOnly -and -not $CompletionOnly) {
 
-    # Retrieve all listeners
-    $listeners = Get-ListeningPort -Port $checkPorts
-    $listeners = @($listeners)
+        # Expand .\username into HOSTNAME\username if needed
+        if ($PSPServiceUser -like '.\*') {
+            $hostname = $env:COMPUTERNAME
+            $PSPServiceUser = $PSPServiceUser -replace "^\.\\", "$env:COMPUTERNAME\"
+            Info "Expanded local user reference to: $PSPServiceUser"
+        }
 
-    # Filter to only active listeners
-    $active = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+        # Validate Name Format
+        if ($PSPServiceUser) {
+            # Acceptable formats:
+            #   DOMAIN\User
+            #   HOSTNAME\User
+            $userPattern = '^[A-Za-z0-9_-]+\\[A-Za-z0-9._$-]+$'
 
-    if ($active.Count -eq 0) {
-        Ok "No conflicts detected. All required ports are available."
-        $noConficts = $true
-    }
-
-    # Separate groups
-    if (-not $noConflicts){
-        $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80,443 }
-        $kestrelConflicts      = $active | Where-Object { $_.Port -in 5000,5001 }
-
-    $conflictDetected = $false
-
-    # IIS / Reverse Proxy check
-    if ($reverseProxyConflicts) {
-        Write-Host ""
-        Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
-        foreach ($c in $reverseProxyConflicts) {
-            if ($c.IISSite) {
-                Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
-            } else {
-                Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+            if ($PSPServiceUser -notmatch $userPattern) {
+                Err "ERROR: Invalid service account format. Use DOMAIN\Username or .\Username"
+                exit 1
             }
         }
 
-        Write-Host ""
-        Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
-        Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
-        Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
-        Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
+        # Let script know whether we're using a specific service account / check credentials
+        if (-not [string]::IsNullOrWhiteSpace($PSPServiceUser)) {
+            # Check if the provided service account creds are good.
+            if (Test-UserCredential -Username $PSPServiceUser -Password $PSPServicePassword) {
+                $UseServiceAccount = $true
+                Ok "We are using a specific service account, $PSPServiceUser to install PowerSyncPro..."
+                Warn "This service account must have access to your database or installation may fail."
+                Start-Sleep 2
+            }
+            else {
+                Err "Service account credentials provided are invalid, please test and attempt install again."
+                exit 1
+            }
+        }
+        else {
+            $UseServiceAccount = $false
+        }
+    }
 
-        $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
-        if ($response -notmatch '^[Yy]$') {
-            Write-Host ""
-            Err "Setup aborted by user to prevent overwriting IIS configuration."
+    # Run a bunch of stuff if not in Completion Only mode....
+    if (-not $CompletionOnly) {
+        # Test if PowerSyncPro is running
+        if (Test-PowerSyncPro) {
+            Warn "PowerSyncPro Service is already installed or running on this system. Aborting installation script."
             exit 1
         }
-    }
 
-    # Kestrel backend port conflicts
-    if ($kestrelConflicts) {
-        Write-Host ""
-        Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
-        foreach ($c in $kestrelConflicts) {
-            Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
-        }
-        Write-Host ""
-        Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
-        exit 1
-    }
+        # Test if machine is a server - we shouldn't run on non-server OS and versions under 2016.
+        Ok "PowerSyncPro Service is *not* present or running - continuing installation..."
 
-    Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
-    }
-    
-    Start-Sleep -Seconds 3
-    
-    # Start Menu Loop
-    # ------------------ Main Loop ------------------
-    try {
-        while ($true) {
-            $CertConfig = Run-Wizard
-
-            Write-Host ""
-            Write-Host "Summary of Certificate Configuration:" -ForegroundColor Green
-            $CertConfig | Format-List | Out-String | Write-Host
-
-            $confirm = Read-Host "Do you want to continue with this configuration? (Y/N)"
-            if ($confirm -match '^(Y|y)$') { break }
-            Write-Host ""
-            Write-Host "Restarting wizard..." -ForegroundColor Yellow
+        if (-not (Test-IsServer2016OrNewer)) {
+            Err "This operating system is not supported. Windows Server 2016 or newer is required."
+            exit 1   # stops the script with an error code
         }
 
-        Write-Host ""
-        Ok "Certificate configuration accepted, beginning installation."
+        Ok "OS check passed - continuing installation..."
+
+        # Choose SQL Target Database Instance
+        $SqlAddress  = "localhost"
+        $SqlPort     = "1433"
+        $SqlDatabase = "PowerSyncProDB"
+
+        $InstallSqlExpress = $false
+
+        # Get all SQL Instances on the system.
+        $instances = @(Get-LocalSqlInstances)
+
+        if ($instances.Count -gt 0) {
+            
+                $selection = Select-SqlTarget -Instances $instances -PreReqOnly $PreReqOnly
+
+            if ($selection.Mode -eq "Existing") {
+                $SqlInstance = $selection.Instance.Instance
+
+                # Only notify if script is not in PreReqOnly Mode
+                if (-not $PreReqOnly) {
+                    Warn "IMPORTANT: The account running this installer must have permission to create databases on this instance."
+                }
+                
+                Warn ("Selected SQL target: {0}\{1}" -f $SqlAddress, $SqlInstance)
+                Warn ("Database to be created: {0}" -f $SqlDatabase)
+
+                $svc = Test-SqlInstanceService -InstanceName $SqlInstance
+                if (-not $svc) { throw ("SQL instance '{0}' was selected but is not valid." -f $SqlInstance) }
+
+                if ($svc.Status -ne "Running") {
+                    if (Confirm-YesNo -Message ("SQL service is {0}. Start it now" -f $svc.Status)) {
+                        Start-Service -Name $svc.Name -ErrorAction Stop
+                        $svc.WaitForStatus("Running", "00:00:20")
+                    }
+                }
+            }
+            else {
+                $SqlInstance = $selection.NewInstanceName
+                $InstallSqlExpress = $true
+            }
+
+        }
+        # No existing SQL Installs present, determine what to do next.
+        else {
+            # If in PreReqOnly mode, ask the user how they want to proceed.
+            if ($PreReqOnly) {
+                    while ($true) {
+                        Info "Script is in PreReq Only mode and no local SQL installations were found..."
+                        Write-Host "Please Select an Option:"
+                        Write-Host "1. Install a new default SQL Express installation."
+                        Write-Host "2. Use an externally hosted SQL server."
+
+                        $choice = Read-Host "Select an Option"
+
+                        if ($choice -eq "1") {
+                            Write-Host "Installing SQL Express..."
+                            Info "SQL Express will be installed with default instance name (SQLEXPRESS)."
+                            $SqlInstance = "SQLEXPRESS"
+                            $InstallSqlExpress = $true
+                            break
+                        }
+                        elseif ($choice -eq "2") {
+                            Write-Host "Using external SQL server..."
+                            Info "Prerequisite installation will continue without installing SQL."
+                            Info "Please setup SQL to an external server during a manual MSI install of PowerSyncPro."
+                            $InstallSqlExpress = $false
+                            break
+                        }
+                        else {
+                                Write-Host "Invalid selection. Please try again." -ForegroundColor Yellow
+                        }
+                    }
+                }
+            # Script is not in PreReqOnly mode, no instances - do a default SQLEXPRESS install.
+            else {  
+                Info "No SQL instances detected. SQL Express will be installed with default instance name (SQLEXPRESS)."
+                $SqlInstance = "SQLEXPRESS"
+                $InstallSqlExpress = $true
+            }
+        }
+
+        # Test if Ports we require during the installation are in-use.  Bail out if conflicts occur.
+        # Define which ports to check
+        $checkPorts = 80,443,5000,5001
+        $noConflicts = $false
+
+        # Retrieve all listeners
+        $listeners = Get-ListeningPort -Port $checkPorts
+        $listeners = @($listeners)
+
+        # Filter to only active listeners
+        $active = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+
+        if ($active.Count -eq 0) {
+            Ok "No conflicts detected. All required ports are available."
+            $noConflicts = $true
+        }
+
+        # Separate groups
+        if (-not $noConflicts){
+            $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80,443 }
+            $kestrelConflicts      = $active | Where-Object { $_.Port -in 5000,5001 }
+
+        # IIS / Reverse Proxy check
+        if ($reverseProxyConflicts) {
+            Write-Host ""
+            Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
+            foreach ($c in $reverseProxyConflicts) {
+                if ($c.IISSite) {
+                    Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
+                } else {
+                    Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+                }
+            }
+
+            Write-Host ""
+            Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
+            Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
+            Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
+            Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
+
+            $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
+            if ($response -notmatch '^[Yy]$') {
+                Write-Host ""
+                Err "Setup aborted by user to prevent overwriting IIS configuration."
+                exit 1
+            }
+        }
+
+        # Kestrel backend port conflicts
+        if ($kestrelConflicts) {
+            Write-Host ""
+            Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
+            foreach ($c in $kestrelConflicts) {
+                Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
+            }
+            Write-Host ""
+            Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
+            exit 1
+        }
+
+        Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
+        }
+
+        Start-Sleep -Seconds 8
     }
-    catch {
-        Err ("Error: {0}" -f $_.Exception.Message)
-        exit 1
-    }
+    
+    # Run the certificate setup menu if we are not only doing prereqs.
+    if (-not $PreReqOnly) {
+        # Start Menu Loop for Certificate Configuration
+        try {
+            while ($true) {
+                $CertConfig = Run-Wizard
+
+                Write-Host ""
+                Write-Host "Summary of Certificate Configuration:" -ForegroundColor Green
+                $CertConfig | Format-List | Out-String | Write-Host
+
+                $confirm = Read-Host "Do you want to continue with this configuration? (Y/N)"
+                if ($confirm -match '^(Y|y)$') { break }
+                Write-Host ""
+                Write-Host "Restarting wizard..." -ForegroundColor Yellow
+            }
+
+            Write-Host ""
+            Ok "Certificate configuration accepted, beginning installation."
+        }
+        catch {
+            Err ("Error: {0}" -f $_.Exception.Message)
+            exit 1
+        }
 
 
-    # Grab Details for CertConfig
-    $FrontendHost = $CertConfig.Hostname # FrontendHost FQDN
-    $CertType = $CertConfig.Type # Type of Cert Chosen
+        # Grab Details for CertConfig
+        $FrontendHost = $CertConfig.Hostname # FrontendHost FQDN
+        $CertType = $CertConfig.Type # Type of Cert Chosen
+    }
+    
 
     # Begin Installation
+    # Print proper status.
+    switch ("$PreReqOnly|$CompletionOnly") {
 
-    Info "Beginning install of PowerSyncPro dependencies and application...."
-    Info "Using a $CertType Certificate with a Hostname of $FrontendHost..."
+        "True|False" {
+            # -PreReqOnly was specified
+            Info "Beginning install of PowerSyncPro dependencies..."
+            break
+        }
 
-    # Check / Install All Dependencies
-    if (-not (Test-dotNet8Hosting -RequiredVersions $DotNetVer)) {
-        Install-dotNet8Hosting -metadataUrl $metadataUrl -tempDir $tempDir 
+        "False|True" {
+            # -CompletionOnly was specified
+            Info "Completing PowerSyncPro Certificate Installation and Hardening..."
+            Info "Using a $CertType Certificate with a Hostname of $FrontendHost..."
+            break
+        }
+
+        "False|False" {
+            # Neither flag was specified (normal full install)
+            Info "Beginning install of PowerSyncPro dependencies and application...."
+            Info "Using a $CertType Certificate with a Hostname of $FrontendHost..."
+        }
     }
 
-    if (-not (Test-VCRedistributable -RequiredVersion $vcVer)){
-    Install-VCRedistributable -DownloadURL $vcDownloadURL -TempDir $tempDir
-    }
+    # If were not in CompletionOnly Mode, install the dependencies...
+    if (-not $CompletionOnly){
+        if (-not (Test-dotNet8Hosting -RequiredVersions $DotNetVer)) {
+            Install-dotNet8Hosting -metadataUrl $metadataUrl -tempDir $tempDir 
+        }
 
-    # If SQL Express isn't installed and the SQL Express install has not been skipped by checks above.
-    if ($UseSqlExpress) {
-        if (-not (Test-SqlExpressInstalled)) {
-            # If we have specified a service account, ensure that user is added to a group and SQL allows admin access to the DB
+        if (-not (Test-VCRedistributable -RequiredVersion $vcVer)){
+            Install-VCRedistributable -DownloadURL $vcDownloadURL -TempDir $tempDir
+        }
+
+        # Install SQL Express only if the user selected "Install new SQL Express"
+        if ($InstallSqlExpress) {
+
+            Info ("Installing SQL Express instance '{0}'..." -f $SqlInstance)
+
             if (-not [string]::IsNullOrWhiteSpace($PSPServiceUser)) {
                 $SQLAdminsGroup = New-LocalSqlAdminsGroup -ServiceUser $PSPServiceUser
-                Install-SQLExpress2022 -BootstrapperUrl $SQLBootstrapperUrl -tempDir $tempDir -SQLAdminsGroup $SQLAdminsGroup
+                Install-SQLExpress -BootstrapperUrl $SQLBootstrapperUrl -tempDir $tempDir `
+                                -InstanceName $SqlInstance -SQLAdminsGroup $SQLAdminsGroup
             }
             else {
-                # Otherwise install without a service account.
-                Install-SQLExpress2022 -BootstrapperUrl $SQLBootstrapperUrl -tempDir $tempDir
+                Install-SQLExpress -BootstrapperUrl $SQLBootstrapperUrl -tempDir $tempDir `
+                                -InstanceName $SqlInstance
             }
         }
-    }
 
-    if (-not (Test-SSMS)){
-        Install-SSMS -SsmsUrl $SsmsUrl -tempDir $tempDir
-    }
-
-    # Test IIS and other functions are installed.
-    Info "Checking current IIS Status on system..."
-    $features = Test-IISFeatures
-    Install-IIS -IISInstalled $features.IISInstalled -WebIPInstalled $features.WebIPInstalled
-
-    # Install IIS Dependencies
-    # Install IIS URL Rewrite
-    if(-not (Test-IISUrlRewrite)){
-    Install-URLRewrite -RewriteUrl $RewriteUrl -tempDir $tempDir
-    }
-
-    # Install and Activate IIS ARR (Advanced Request Routing)
-    $arrStatus = Test-IISARR
-    Install-ARR -ARRInstalled $arrStatus.ARRInstalled -ARRActivated $arrStatus.ARRActivated -ArrUrl $ArrUrl -tempDir $tempDir
-
-    # Determine our SQL Server Instance Name for dependency after install.
-    try {
-        if ($UseSqlExpress) {
-            $ExpectedSQLServiceName = 'MSSQL$SQLEXPRESS'
+        # Install SSMS if not installed and we are not using an external server.
+        if (-not (Test-SSMS) -and -not $ExternalServerInUse){
+            Install-SSMS -SsmsUrl $SsmsUrl -tempDir $tempDir
         }
-        else {
-            $SQLInstanceTemp = $SQLInstance
-            if ("MSSQLSERVER" -eq $SQLInstanceTemp){
-                $SQLInstanceTemp = "MSSQLSERVER"
-            }
 
-            $SqlService = Test-SqlInstanceService -InstanceName $SQLInstanceTemp
+        # Test IIS and other functions are installed.
+        Info "Checking current IIS Status on system..."
+        $features = Test-IISFeatures
+        Install-IIS -IISInstalled $features.IISInstalled -WebIPInstalled $features.WebIPInstalled
 
-            if ($null -ne $SqlService) {
-                $ExpectedSQLServiceName = $SqlService.Name
-            }
-            else {
-                Warn "Warning: SQL instance '$SqlInstanceTemp' not found as a service."
-                $ExpectedSQLServiceName = "MSSQL`$$SqlInstanceTemp"
-            }
+        # Install IIS Dependencies
+        # Install IIS URL Rewrite
+        if(-not (Test-IISUrlRewrite)){
+        Install-URLRewrite -RewriteUrl $RewriteUrl -tempDir $tempDir
         }
-    }
-    catch {
-        Err "Error while checking SQL service for instance '$SqlInstanceTemp': $($_.Exception.Message)"
-        # Default to expected service pattern so rest of script can continue
-        $ExpectedSQLServiceName = if ($UseSqlExpress) { 'MSSQL$SQLEXPRESS' } else { "MSSQL`$$SqlInstanceTemp" }
+
+        # Install and Activate IIS ARR (Advanced Request Routing)
+        $arrStatus = Test-IISARR
+        Install-ARR -ARRInstalled $arrStatus.ARRInstalled -ARRActivated $arrStatus.ARRActivated -ArrUrl $ArrUrl -tempDir $tempDir
     }
 
-    # Install PSP, choose proper database for installation type.
-    if ($UseSqlExpress) {
-        # Install PSP w/ SQL Express Backend, Sane Defaults - We don't need to check its running, we did that above.
-        Info "Installing PowerSyncPro using SQL Express configuration..."
+    # Dump out of Script if we are in PreReq Only Mode (prevent from running further)
+    if ($PreReqOnly) {
+        Write-Host "`n"
+        Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
+        Write-Host $asciiLogo
+        Write-Host "Prerequisite installation completed..." -ForegroundColor Green
+        Write-Host "You can now complete your PowerSyncPro Installation using the PowerSyncPro MSI."
+        Write-Host "Once the installation is completed and PowerSyncPro is running, you can"
+        Write-Host "complete installation by running this script with the -CompletionOnly flag."
+        Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
+        exit 0
+    }
+
+    # Install PSP if we are not in PreReq or Completion Mode
+    if (-not $PreReqOnly -and -not $CompletionOnly) {
+        # Install PSP, choose proper database for installation type.
+        Info ("Installing PowerSyncPro using SQL instance '{0}'..." -f $SqlInstance)
         if ($UseServiceAccount -eq $true) {
-            Info "Using $PSPServiceUser as service account..."
-            Install-PSP -PSPUrl $PSPUrl -tempDir $tempDir -FrontendHost $FrontendHost -PSPServiceUser $PSPServiceUser -PSPServicePassword $PSPServicePassword
+            Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort `
+                        -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost `
+                        -PSPServiceUser $PSPServiceUser -PSPServicePassword $PSPServicePassword
         }
         else {
-            Info "Using System as Service Account..."
-            Install-PSP -PSPUrl $PSPUrl -tempDir $tempDir -FrontendHost $FrontendHost
-        }
-    }
-    else {
-        Info "Installing PowerSyncPro using full SQL Server configuration..."
-        if ($UseServiceAccount -eq $true){
-            Info "Using $PSPServiceUser as service account..."
-            Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost -PSPServiceUser $PSPServiceUser -PSPServicePassword $PSPServicePassword
-        }
-        else{
-            Info "Using System as Service Account..."
-            Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost
+            Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort `
+                        -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost
         }
     }
 
-    # Set PSP to be Dependent on SQL running before it starts as a service.
-    Add-ServiceDependency -ServiceName "PowerSyncPro" -DependsOn $ExpectedSQLServiceName
+    # Setup Service Dependencies in Completion Only Mode
+    # If Script is in Completion Only ($CompletionOnly) or Normal mode and if we are not using an external server (-not $ExternalServerInUse)
+    if (-not $PreReqOnly -and -not $ExternalServerInUse) {
+        # Determine SQL Server service name for dependency
+        $SQLInstanceTemp = $SqlInstance
 
-    # Drop Support Scripts and custom Webconfig - We don't check that they already exist.
-    # ACME Cert Puller - if doing a LetsEncrypt Certificate
-    if ($CertType -eq "LetsEncrypt"){
-        Info "Installing ACME / LetsEncrypt Certificate Tool `($CertPullerScriptName`) to $ScriptFolder"
-        Install-Scripts -TargetFile $CertPullerScriptName -TargetFolder $ScriptFolder -URL $CertPullerURL
-    }
-
-    # Cert Renewer - if doing a BYOC Certificate Install
-    if ($CertType -eq "BYOC"){
-        Info "Installing Certificate Renewal Tool `($CertRenewerScriptName`) to $ScriptFolder"
-        Install-Scripts -TargetFile $CertRenewerScriptName -TargetFolder $ScriptFolder -URL $CertRenewerURL
-    }
- 
-    # WebConfig Editor Tool
-    Info "Installing Web.Config Editor Tool `($WebConfigScriptName`) to $ScriptFolder"
-    Install-Scripts -TargetFile $WebConfigScriptName -TargetFolder $ScriptFolder -URL $WebConfigScriptURL
-
-    # Install Custom WebConifg
-    Info "Installing Customized $WebConfigName to $WebConfigFolder"
-    Install-WebConfig -FrontendHost $FrontendHost -TargetFolder $WebConfigFolder -TargetFile $WebConfigName
-
-    # Setup IIS and Unlock Required Sections
-    Info "Unlocking configuration section for web.config..."
-    Initialize-IIS
-
-    # Add Frontend Host to local Hosts File
-    Info "Editing Hosts file to add entry for $FrontendHost pointing to 127.0.0.1..."
-    Install-HostsFile -FrontendHost $FrontendHost
-
-    # Add Firewall Rule for Port 443
-    Info "Opening Port 443 on Firewall for IIS..."
-    Add-FirewallRuleForPort -Port 443
-
-    # Harden TLS / SSL - Disable Insecure Ciphers
-    Harden-TlsConfiguration
-
-    # Install certificate depending on type chosen at beginning if script.
-    switch ($CertType) {
-        'LetsEncrypt' {
-            Info "Installation tasks completed, getting a certificate from LetsEncrypt for $FrontendHost..."
-            try{
-                Info "Opening Port 80 on Firewall for IIS, ensuring LetsEncrypt can reach server..."
-                Add-FirewallRuleForPort -Port 80
-                # Run Cert Puller Script to Install Scripts
-                Info "Running CertPuller Script to grab LetsEncrypt Certificate for $FrontendHost..."
-                Install-ACMECertificate -FrontendHost $FrontendHost -ContactEmail $CertConfig.Email
-
-                if ([string]::IsNullOrWhiteSpace($PSPServiceUser) -or
-                    $PSPServiceUser -eq "LocalSystem" -or
-                    $PSPServiceUser -eq "NT AUTHORITY\SYSTEM" -or
-                    $PSPServiceUser -eq "NT AUTHORITY\NetworkService" -or
-                    $PSPServiceUser -eq "NT AUTHORITY\LocalService") {
-                        Info "Skipping private key ACL update: service user is blank or system account."
-                        $certInstalled = $true
-                    }
+        try {
+            if ($SQLInstanceTemp -eq "MSSQLSERVER") {
+                $ExpectedSQLServiceName = "MSSQLSERVER"
+            }
+            else {
+                $SqlService = Test-SqlInstanceService -InstanceName $SQLInstanceTemp
+                if ($null -ne $SqlService) {
+                    $ExpectedSQLServiceName = $SqlService.Name
+                }
                 else {
-                    if (-not (Test-AndFixCertPermissions -Domain $FrontendHost -User $PSPServiceUser)) {
-                        Warn "Private key ACL update failed or not required. Continuing..."
-                    } else {
-                        Ok "Private key ACL verified for $PSPServiceUser"
-                        $certInstalled = $true
-                    }
+                    Warn ("SQL instance '{0}' not found as a service. Using expected service name." -f $SQLInstanceTemp)
+                    $ExpectedSQLServiceName = "MSSQL`$$SQLInstanceTemp"
                 }
+            }
+        }
+        catch {
+            Warn ("Error while checking SQL service for instance '{0}': {1}" -f $SQLInstanceTemp, $_.Exception.Message)
 
-                # Register Scheduled Task to Renew Certificate.
-                Info "Registering Scheduled task to renew LetsEncrypt Certificate..."
-                Register-CertRenewalScheduledTask -Domain $FrontendHost -ContactEmail $CertConfig.Email
-                Ok "Scheduled task registered..."
-                
-            } catch {
-                Warn "LetsEncrypt install failed: $($_.Exception.Message)"
-                # --- DEBUG: Check the certificate type and private key provider ---
-                try {
-                    $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
-                        Where-Object { $_.Subject -like "*$FrontendHost*" } |
-                        Sort-Object NotAfter -Descending |
-                        Select-Object -First 1
+            if ($SQLInstanceTemp -eq "MSSQLSERVER") {
+                $ExpectedSQLServiceName = "MSSQLSERVER"
+            }
+            else {
+                $ExpectedSQLServiceName = "MSSQL`$$SQLInstanceTemp"
+            }
+        }
 
-                    if ($null -eq $cert) {
-                        Warn "DEBUG: No certificate found for $FrontendHost after Install-ACMECertificate."
-                    }
-                    else {
-                        Info "DEBUG: Retrieved cert subject: $($cert.Subject)"
-                        Info "DEBUG: Cert has private key: $($cert.HasPrivateKey)"
-                        
-                        # Test if CAPI (legacy) or CNG (modern) key
-                        try {
-                            $null = $cert.PrivateKey.CspKeyContainerInfo.ProviderName
-                            Ok "DEBUG: Certificate uses CAPI (CSP) provider: $($cert.PrivateKey.CspKeyContainerInfo.ProviderName)"
-                        }
-                        catch {
-                            if ($cert.PrivateKey -is [System.Security.Cryptography.RSACng]) {
-                                Warn "DEBUG: Certificate uses CNG (KSP) provider: Microsoft Software Key Storage Provider"
-                            }
-                            else {
-                                Warn "DEBUG: Unknown key provider type for certificate."
-                            }
-                        }
-                    }
-                }
-                catch {
-                    Warn "DEBUG: Error while inspecting certificate: $_"
-                }
-                exit 1
-                # --- END DEBUG BLOCK ---
-                
-                $certInstalled = $false
-            }
-        }
-        'BYOC' {
-            Info "Installation tasks completed, installing BYOC certificate for $FrontendHost..."
-            try{
-                Install-CustomPfxCertificate -PfxPath $CertConfig.PfxPath -Password $CertConfig.PfxPass
-                $certInstalled = $true
-            } catch {
-                Warn "BYOC certificate install failed: $($_.Exception.Message)"
-                $certInstalled = $false
-            }
-        }
-        'SelfSigned' {
-            try{
-                Info "Installation tasks completed, installing self-signed certificate for $FrontendHost..."
-                Install-SelfSignedCertificate -DnsName $FrontendHost
-                $certInstalled = $true
-            } catch {
-                Warn "Self Signed certificate install failed: $($_.Exception.Message)"
-                $certInstalled = $false
-            }
-        }
-        default {
-            Warn "Unknown certificate type: $CertType - Certificate has not been installed.  Please contact support."
-        }
+        # Set PSP to be Dependent on SQL running before it starts as a service.
+        Add-ServiceDependency -ServiceName "PowerSyncPro" -DependsOn $ExpectedSQLServiceName
     }
 
+    # Complete Script if not in PreReqOnly mode.
+    if (-not $PreReqOnly) {
+        # Drop Support Scripts and custom Webconfig - We don't check that they already exist.
+        # ACME Cert Puller - if doing a LetsEncrypt Certificate
+        if ($CertType -eq "LetsEncrypt"){
+            Info "Installing ACME / LetsEncrypt Certificate Tool `($CertPullerScriptName`) to $ScriptFolder"
+            Install-Scripts -TargetFile $CertPullerScriptName -TargetFolder $ScriptFolder -URL $CertPullerURL
+        }
 
-    # Handle Certificate Installation Failures.
-    if ($certInstalled) {
-        Ok "Certificate installation completed successfully."
-    }
-    else {
-        Err "Certificate installation failed."
+        # Cert Renewer - if doing a BYOC Certificate Install
+        if ($CertType -eq "BYOC"){
+            Info "Installing Certificate Renewal Tool `($CertRenewerScriptName`) to $ScriptFolder"
+            Install-Scripts -TargetFile $CertRenewerScriptName -TargetFolder $ScriptFolder -URL $CertRenewerURL
+        }
+    
+        # WebConfig Editor Tool
+        Info "Installing Web.Config Editor Tool `($WebConfigScriptName`) to $ScriptFolder"
+        Install-Scripts -TargetFile $WebConfigScriptName -TargetFolder $ScriptFolder -URL $WebConfigScriptURL
 
+        # Install Custom WebConifg
+        Info "Installing Customized $WebConfigName to $WebConfigFolder"
+        Install-WebConfig -FrontendHost $FrontendHost -TargetFolder $WebConfigFolder -TargetFile $WebConfigName
+
+        # Setup IIS and Unlock Required Sections
+        Info "Unlocking configuration section for web.config..."
+        Initialize-IIS
+
+        # Add Frontend Host to local Hosts File
+        Info "Editing Hosts file to add entry for $FrontendHost pointing to 127.0.0.1..."
+        Install-HostsFile -FrontendHost $FrontendHost
+
+        # Add Firewall Rule for Port 443
+        Info "Opening Port 443 on Firewall for IIS..."
+        Add-FirewallRuleForPort -Port 443
+
+        # Harden TLS / SSL - Disable Insecure Ciphers
+        Harden-TlsConfiguration
+
+        # Install certificate depending on type chosen at beginning if script.
         switch ($CertType) {
             'LetsEncrypt' {
-                Write-Host "Troubleshooting steps for LetsEncrypt:" -ForegroundColor Yellow
-                Write-Host " - Ensure Port 80 is open to the Internet (Firewall / NSG / load balancer rules)." -ForegroundColor Yellow
-                Write-Host " - Verify DNS A record for $FrontendHost points to this systems public IP." -ForegroundColor Yellow
-                Write-Host " - The script to retry is located at: C:\Scripts\Cert-Puller_PoshACME.ps1" -ForegroundColor Yellow
-                Write-Host " - Example retry command:" -ForegroundColor Yellow
-                Write-Host "   `"C:\Scripts\Cert-Puller_PoshACME.ps1 -Domain $FrontendHost -ContactEmail $($CertConfig.Email)`"" -ForegroundColor Cyan
-            }
+                Info "Installation tasks completed, getting a certificate from LetsEncrypt for $FrontendHost..."
+                try{
+                    Info "Opening Port 80 on Firewall for IIS, ensuring LetsEncrypt can reach server..."
+                    Add-FirewallRuleForPort -Port 80
+                    # Run Cert Puller Script to Install Scripts
+                    Info "Running CertPuller Script to grab LetsEncrypt Certificate for $FrontendHost..."
+                    Install-ACMECertificate -FrontendHost $FrontendHost -ContactEmail $CertConfig.Email
 
+                    if ([string]::IsNullOrWhiteSpace($PSPServiceUser) -or
+                        $PSPServiceUser -eq "LocalSystem" -or
+                        $PSPServiceUser -eq "NT AUTHORITY\SYSTEM" -or
+                        $PSPServiceUser -eq "NT AUTHORITY\NetworkService" -or
+                        $PSPServiceUser -eq "NT AUTHORITY\LocalService") {
+                            Info "Skipping private key ACL update: service user is blank or system account."
+                            $certInstalled = $true
+                        }
+                    else {
+                        if (-not (Test-AndFixCertPermissions -Domain $FrontendHost -User $PSPServiceUser)) {
+                            Warn "Private key ACL update failed or not required. Continuing..."
+                        } else {
+                            Ok "Private key ACL verified for $PSPServiceUser"
+                            $certInstalled = $true
+                        }
+                    }
+
+                    # Register Scheduled Task to Renew Certificate.
+                    Info "Registering Scheduled task to renew LetsEncrypt Certificate..."
+                    Register-CertRenewalScheduledTask -Domain $FrontendHost -ContactEmail $CertConfig.Email
+                    Ok "Scheduled task registered..."
+                    
+                } catch {
+                    Warn "LetsEncrypt install failed: $($_.Exception.Message)"
+                    # --- DEBUG: Check the certificate type and private key provider ---
+                    try {
+                        $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+                            Where-Object { $_.Subject -like "*$FrontendHost*" } |
+                            Sort-Object NotAfter -Descending |
+                            Select-Object -First 1
+
+                        if ($null -eq $cert) {
+                            Warn "DEBUG: No certificate found for $FrontendHost after Install-ACMECertificate."
+                        }
+                        else {
+                            Info "DEBUG: Retrieved cert subject: $($cert.Subject)"
+                            Info "DEBUG: Cert has private key: $($cert.HasPrivateKey)"
+                            
+                            # Test if CAPI (legacy) or CNG (modern) key
+                            try {
+                                $null = $cert.PrivateKey.CspKeyContainerInfo.ProviderName
+                                Ok "DEBUG: Certificate uses CAPI (CSP) provider: $($cert.PrivateKey.CspKeyContainerInfo.ProviderName)"
+                            }
+                            catch {
+                                if ($cert.PrivateKey -is [System.Security.Cryptography.RSACng]) {
+                                    Warn "DEBUG: Certificate uses CNG (KSP) provider: Microsoft Software Key Storage Provider"
+                                }
+                                else {
+                                    Warn "DEBUG: Unknown key provider type for certificate."
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        Warn "DEBUG: Error while inspecting certificate: $_"
+                    }
+                    exit 1
+                    # --- END DEBUG BLOCK ---
+                    
+                    $certInstalled = $false
+                }
+            }
             'BYOC' {
-                Write-Host "Troubleshooting steps for BYOC (PFX Import):" -ForegroundColor Yellow
-                Write-Host " - Ensure the PFX file exists at: $($CertConfig.PfxPath)" -ForegroundColor Yellow
-                Write-Host " - Verify the password is correct and contains the private key." -ForegroundColor Yellow
-                Write-Host " - Confirm the certificate subject matches the intended hostname $FrontendHost." -ForegroundColor Yellow
-                Write-Host "Contact Support if you continue to have issues."
+                Info "Installation tasks completed, installing BYOC certificate for $FrontendHost..."
+                try{
+                    Install-CustomPfxCertificate -PfxPath $CertConfig.PfxPath -Password $CertConfig.PfxPass
+                    $certInstalled = $true
+                } catch {
+                    Warn "BYOC certificate install failed: $($_.Exception.Message)"
+                    $certInstalled = $false
+                }
             }
-
             'SelfSigned' {
-                Write-Host "Troubleshooting steps for Self-Signed certificates:" -ForegroundColor Yellow
-                Write-Host " - Ensure the FQDN you provided ($FrontendHost) is correct." -ForegroundColor Yellow
-                Write-Host " - Be aware self-signed certs may cause SSL/TLS trust warnings in browsers and clients." -ForegroundColor Yellow
-                Write-Host " - If possible, consider switching to LetsEncrypt or BYOC for production environments." -ForegroundColor Yellow
+                try{
+                    Info "Installation tasks completed, installing self-signed certificate for $FrontendHost..."
+                    Install-SelfSignedCertificate -DnsName $FrontendHost
+                    $certInstalled = $true
+                } catch {
+                    Warn "Self Signed certificate install failed: $($_.Exception.Message)"
+                    $certInstalled = $false
+                }
             }
-
             default {
-                Write-Host "Unknown certificate type $CertType - no troubleshooting guidance available. Contact Support." -ForegroundColor Yellow
+                Warn "Unknown certificate type: $CertType - Certificate has not been installed.  Please contact support."
             }
         }
-    }
 
-    # Complete.
-    Write-Host "`n"
-    Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
-    Write-Host $asciiLogo
-    if ($certInstalled) {
-        Write-Host "Installation Complete and Certificate Installed..." -ForegroundColor Green
-    }
-    else {
-        Write-Host "Installation Complete but Certificate Installation Failed..." -ForegroundColor Red
-    }
-    Write-Host "`n"
+        # Handle Certificate Installation Failures.
+        if ($certInstalled) {
+            Ok "Certificate installation completed successfully."
+        }
+        else {
+            Err "Certificate installation failed."
 
-    # Print Relevant Info per Certificate Type
-    switch($CertType){
-        'LetsEncrypt' {
-            Write-Host "LetsEncrypt certificates must be renewed every 90 days." -ForegroundColor Cyan
-            Write-Host "A scheduled task has been installed to run C:\Scripts\Cert-Puller_PoshACME.ps1 every week to check the status of the"
-            Write-Host "certificate and renew it if necessary."
-            Write-Host "You must leave Port 80 on this server exposed to the Internet for sucessful certificate renewals."
+            switch ($CertType) {
+                'LetsEncrypt' {
+                    Write-Host "Troubleshooting steps for LetsEncrypt:" -ForegroundColor Yellow
+                    Write-Host " - Ensure Port 80 is open to the Internet (Firewall / NSG / load balancer rules)." -ForegroundColor Yellow
+                    Write-Host " - Verify DNS A record for $FrontendHost points to this systems public IP." -ForegroundColor Yellow
+                    Write-Host " - The script to retry is located at: C:\Scripts\Cert-Puller_PoshACME.ps1" -ForegroundColor Yellow
+                    Write-Host " - Example retry command:" -ForegroundColor Yellow
+                    Write-Host "   `"C:\Scripts\Cert-Puller_PoshACME.ps1 -Domain $FrontendHost -ContactEmail $($CertConfig.Email)`"" -ForegroundColor Cyan
+                }
+
+                'BYOC' {
+                    Write-Host "Troubleshooting steps for BYOC (PFX Import):" -ForegroundColor Yellow
+                    Write-Host " - Ensure the PFX file exists at: $($CertConfig.PfxPath)" -ForegroundColor Yellow
+                    Write-Host " - Verify the password is correct and contains the private key." -ForegroundColor Yellow
+                    Write-Host " - Confirm the certificate subject matches the intended hostname $FrontendHost." -ForegroundColor Yellow
+                    Write-Host "Contact Support if you continue to have issues."
+                }
+
+                'SelfSigned' {
+                    Write-Host "Troubleshooting steps for Self-Signed certificates:" -ForegroundColor Yellow
+                    Write-Host " - Ensure the FQDN you provided ($FrontendHost) is correct." -ForegroundColor Yellow
+                    Write-Host " - Be aware self-signed certs may cause SSL/TLS trust warnings in browsers and clients." -ForegroundColor Yellow
+                    Write-Host " - If possible, consider switching to LetsEncrypt or BYOC for production environments." -ForegroundColor Yellow
+                }
+
+                default {
+                    Write-Host "Unknown certificate type $CertType - no troubleshooting guidance available. Contact Support." -ForegroundColor Yellow
+                }
+            }
         }
-        'BYOC' {
-            Write-Host "Your BYOC PFX Certificate has been installed." -ForegroundColor Cyan
-            Write-Host "To renew your certificate, please use the renewal script at C:\Scripts\Cert-Renewer.ps1"
+
+        # Complete.
+        Write-Host "`n"
+        Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
+        Write-Host $asciiLogo
+        if ($certInstalled) {
+            Write-Host "Installation Complete and Certificate Installed..." -ForegroundColor Green
         }
+        else {
+            Write-Host "Installation Complete but Certificate Installation Failed..." -ForegroundColor Red
+        }
+        Write-Host "`n"
+
+        # Print Relevant Info per Certificate Type
+        switch($CertType){
+            'LetsEncrypt' {
+                Write-Host "LetsEncrypt certificates must be renewed every 90 days." -ForegroundColor Cyan
+                Write-Host "A scheduled task has been installed to run C:\Scripts\Cert-Puller_PoshACME.ps1 every week to check the status of the"
+                Write-Host "certificate and renew it if necessary."
+                Write-Host "You must leave Port 80 on this server exposed to the Internet for sucessful certificate renewals."
+            }
+            'BYOC' {
+                Write-Host "Your BYOC PFX Certificate has been installed." -ForegroundColor Cyan
+                Write-Host "To renew your certificate, please use the renewal script at C:\Scripts\Cert-Renewer.ps1"
+            }
+        }
+        Write-Host "`n"
+        Write-Host "Admin access to PSP via the Reverse Proxy - e.g. https://$FrontendHost has been restricted to localhost only." -ForegroundColor Cyan
+        Write-Host "You can modify hosts which are allowed to access the HTTPS Reverse Proxy by running C:\Scripts\WebConfig_Editor.ps1."
+        Write-Host "This restriction does not apply on https://$FrontendHost/Agent which is used for the PSP Migration Agent."
+        Write-Host "`n"
+        Write-Host "You can now access PowerSyncPro at https://$FrontendHost/ from this system." -ForegroundColor Yellow
+        Write-Host "The default password is admin / 123qwe, please change it." -ForegroundColor Yellow
+        Write-Host "`n"
+        Write-Host "We recommend you reboot your server before using PowerSyncPro." -ForegroundColor Yellow
+        Write-Host "If you need additional support or assistance:"
+        Write-Host "PowerSyncPro Knowledge Base: https://kb.powersyncpro.com/"
+        Write-Host "Open a ticket at https://tickets.powersyncpro.com/."
+        Write-Host "`n"
+        Write-Host "Congrats!" -ForegroundColor Green
+        Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
     }
-    Write-Host "`n"
-    Write-Host "Admin access to PSP via the Reverse Proxy - e.g. https://$FrontendHost has been restricted to localhost only." -ForegroundColor Cyan
-    Write-Host "You can modify hosts which are allowed to access the HTTPS Reverse Proxy by running C:\Scripts\WebConfig_Editor.ps1."
-    Write-Host "This restriction does not apply on https://$FrontendHost/Agent which is used for the PSP Migration Agent."
-    Write-Host "`n"
-    Write-Host "You can now access PowerSyncPro at https://$FrontendHost/ from this system." -ForegroundColor Yellow
-    Write-Host "The default password is admin / 123qwe, please change it." -ForegroundColor Yellow
-    Write-Host "`n"
-    Write-Host "We recommend you reboot your server before using PowerSyncPro." -ForegroundColor Yellow
-    Write-Host "If you need additional support or assistance:"
-    Write-Host "PowerSyncPro Knowledge Base: https://kb.powersyncpro.com/"
-    Write-Host "Open a ticket at https://tickets.powersyncpro.com/."
-    Write-Host "`n"
-    Write-Host "Congrats!" -ForegroundColor Green
-    Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
+    
 }
 catch {
     Write-Error "Unhandled error: $($_.Exception.Message)"
