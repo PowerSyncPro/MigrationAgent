@@ -57,7 +57,7 @@ $serverName = $env:COMPUTERNAME # Or use [System.Environment]::MachineName
 # Match trailing digits
 if ($serverName -match '\d+$') {
     $trailingNumber = $Matches[0]
-    $randomChars="Env$trailingNumber"
+    $randomChars=$trailingNumber
 }
 # Define the 6 machines with their display names, connection addresses (IP or hostname), and assigned credential keys
 # Assign credentials to machines (example mapping: adjust as needed)
