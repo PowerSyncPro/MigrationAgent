@@ -28,6 +28,34 @@
    """"    ""   """  """"""""     ""                                                                
 #>
 
+#Requires -RunAsAdministrator
+
+# Run PowerShell as Administrator
+
+
+$base = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+New-Item -Path $base -Force | Out-Null
+
+New-ItemProperty -Path $base -Name HideFirstRunExperience -PropertyType DWord -Value 1 -Force | Out-Null
+New-ItemProperty -Path $base -Name AutoImportAtFirstRun -PropertyType DWord -Value 4 -Force | Out-Null
+New-ItemProperty -Path $base -Name DefaultBrowserSettingEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+New-ItemProperty -Path $base -Name DefaultBrowserSettingsCampaignEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+
+New-ItemProperty -Path $base -Name RestoreOnStartup -PropertyType DWord -Value 4 -Force | Out-Null
+
+# Startup URLs: easiest + most robust is the numbered subkey values
+$urlsKey = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs"
+New-Item -Path $urlsKey -Force | Out-Null
+New-ItemProperty -Path $urlsKey -Name "1" -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
+
+New-ItemProperty -Path $base -Name ShowHomeButton -PropertyType DWord -Value 1 -Force | Out-Null
+New-ItemProperty -Path $base -Name HomepageLocation -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
+New-ItemProperty -Path $base -Name HomepageIsNewTabPage -PropertyType DWord -Value 0 -Force | Out-Null
+
+Stop-Process -Name msedge -Force -ErrorAction SilentlyContinue
+
+
+
 # PowerShell Script to Generate RDCMan .rdg File with Encrypted Credentials
 # This script creates a .rdg file for Remote Desktop Connection Manager (RDCMan)
 # Credentials are hardcoded here as placeholders—replace with your actual values.
