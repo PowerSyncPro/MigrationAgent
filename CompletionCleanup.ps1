@@ -1,9 +1,9 @@
 <#
 .DESCRIPTION
     Cleans up remnants of a migration.
-    Clears deny logon rights (preserves Guest in local deny), resets lock screen policy, clears legal notice.
+    Clears deny logon rights (preserves Guest in local deny), resets lock screen policy (CSP + Policy paths), clears legal notice.
 
-    To be used in a situation where the PowerSyncPro Migration Agent doesn't clear out the locak screen, legal notice, or local GPO preventing user login.
+    To be used in a situation where the PowerSyncPro Migration Agent doesn't clear out the lock screen, legal notice, or local GPO preventing user login.
 
     Login as a local administrator on the affected system and run this script.
  
@@ -13,20 +13,20 @@
 .NOTES
     Date            January/2026
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 2.0
-    Updated: 18th Jan 2026 - Initial Release
+    Version: 2.1
+    Updated: 26th Jan 2026 - Added cleanup of LockScreenImage in Policies paths (HKLM and WOW6432Node)
 #>
 
 #Requires -RunAsAdministrator
 
 # CompletionCleanup.ps1
-# 
 
 $ErrorActionPreference = 'Stop'
 
 Write-Host "Starting CompletionCleanup operations..." -ForegroundColor Cyan
 
 # 1. Process deny logon rights
+# (unchanged - keeping your original logic here)
 Write-Host ""
 Write-Host "1. Processing deny logon rights..."
 
@@ -116,30 +116,51 @@ if (Test-Path $verifyInf) {
 
 Remove-Item -Path $exportInf,$modInf,$verifyInf,$logFile -Force -EA SilentlyContinue
 
-# 2. Reset lock screen (correct PersonalizationCSP path)
+# 2. Reset lock screen (expanded to cover both CSP and Policy paths)
 Write-Host ""
 Write-Host "2. Resetting lock screen to default..."
 
-$cspPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP"
-$keysRemoved = $false
+$removedCount = 0
 
+# A. Clear Personalization CSP (original)
+$cspPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP"
 if (Test-Path $cspPath) {
     @("LockScreenImagePath", "LockScreenImageUrl", "LockScreenImageStatus") | ForEach-Object {
         if (Get-ItemProperty -Path $cspPath -Name $_ -EA SilentlyContinue) {
             Remove-ItemProperty -Path $cspPath -Name $_ -EA SilentlyContinue
-            $keysRemoved = $true
+            $removedCount++
         }
     }
-    if ($keysRemoved) {
-        Write-Host "  Removed lock screen CSP keys" -ForegroundColor Green
-    } else {
-        Write-Host "  No lock screen CSP keys found" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "  No PersonalizationCSP path found" -ForegroundColor Yellow
 }
 
-# 3. Clear legal notice (correct Winlogon path)
+# B. Clear Policy-enforced LockScreenImage (main and WOW6432Node)
+$policyPaths = @(
+    "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization",
+    "HKLM:\SOFTWARE\WOW6432Node\Policies\Microsoft\Windows\Personalization"
+)
+
+foreach ($pPath in $policyPaths) {
+    if (Test-Path $pPath) {
+        if (Get-ItemProperty -Path $pPath -Name "LockScreenImage" -EA SilentlyContinue) {
+            Remove-ItemProperty -Path $pPath -Name "LockScreenImage" -EA SilentlyContinue
+            $removedCount++
+            Write-Host "  Removed LockScreenImage from $pPath" -ForegroundColor Green
+        }
+        # Optional: also clean LockScreenOverlaysDisabled if present (sometimes set together)
+        if (Get-ItemProperty -Path $pPath -Name "LockScreenOverlaysDisabled" -EA SilentlyContinue) {
+            Remove-ItemProperty -Path $pPath -Name "LockScreenOverlaysDisabled" -EA SilentlyContinue
+            $removedCount++
+        }
+    }
+}
+
+if ($removedCount -gt 0) {
+    Write-Host "  Cleared $removedCount lock screen related registry values (CSP + Policy paths)" -ForegroundColor Green
+} else {
+    Write-Host "  No custom lock screen settings found in CSP or Policy paths" -ForegroundColor Yellow
+}
+
+# 3. Clear legal notice (unchanged)
 Write-Host ""
 Write-Host "3. Clearing legal notice (pre-logon message)..."
 
@@ -164,9 +185,9 @@ Write-Host ""
 Write-Host "CompletionCleanup finished." -ForegroundColor Cyan
 Write-Host " - Guest preserved in Deny log on locally (if it existed)"
 Write-Host " - Other deny entries removed"
-Write-Host " - Lock screen policy reset"
+Write-Host " - Lock screen policy reset (CSP + Policies\Microsoft\Windows\Personalization paths)"
 Write-Host " - Legal notice cleared"
 Write-Host " - Log off/on or reboot recommended to apply all changes"
-Write-Host " - If changes revert, check domain GPO with gpresult /h report.html"
+Write-Host " - If changes revert, check domain GPO with gpresult /h report.html or rsop.msc"
 
 Write-Host "Done." -ForegroundColor Green
