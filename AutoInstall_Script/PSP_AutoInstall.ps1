@@ -4,11 +4,12 @@
     This script will download various content from Microsoft, PowerSyncPro, and the PowerSyncPro Github.
  
 .NOTES
-    Date            January/2026
+    Date            February/2026
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 0.2
+    Version: 0.3
     Updated : 9th January, 2026 - Added logic to handle installing with existing SQL instances on system, SQL Express 2025, fixed a bug where VC++ install would cause script failure. JRR
     Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
+    Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only.
     Copyright (c) 2025 Declaration Software
 #>
 
@@ -30,7 +31,12 @@ param (
 
     # Run completion only - for after manually installing PSP (Advanced Installs Only)
     # --> Completes SSL Setup, Hardens Server, Installs Certificate
-    [switch]$CompletionOnly = $false
+    [switch]$CompletionOnly = $false,
+
+    # Run headless - reduces manual input from user for automation. Only to be used with the $PreReqOnly flags.
+    # --> Removes user input commitment, assumes using the default SQL instance if available
+    # Internal Use Only
+    [switch]$Headless = $false
 )
 
 Set-StrictMode -Version Latest
@@ -2980,8 +2986,13 @@ function Run-Wizard {
 }
 # -------------------------------------------------
 # Menu / Script Actions / Logic
-# Initialize logging
 
+# If dot-sourced, stop here (only load functions)
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+} 
+
+# Initialize logging
 # Register exit cleanup handler
 #Start Transcription
 if (-not (Test-Path -Path (Split-Path $LogPath -Parent))) {
@@ -3010,6 +3021,12 @@ try{
      (-not [string]::IsNullOrWhiteSpace($PSPServiceUser) -or
       -not [string]::IsNullOrWhiteSpace($PSPServicePassword)) ) {
         Err "-PreReq and -Completion Flags are not compatible with Service Accounts... Exiting."
+        exit 1
+    }
+
+    # Headless can only be used with PreReqOnly
+    if ($Headless -and -not $PreReqOnly) {
+        Err "ERROR: -Headless can only be used with -PreReqOnly. Exiting."
         exit 1
     }
 
@@ -3126,44 +3143,63 @@ try{
 
         $InstallSqlExpress = $false
 
-        # Get all SQL Instances on the system.
-        $instances = @(Get-LocalSqlInstances)
+        # Headless mode: assume local FULL SQL default instance (MSSQLSERVER)
+        if ($Headless) {
+            Info "Headless mode detected. Using local default SQL instance (MSSQLSERVER)."
+            $SqlInstance      = "MSSQLSERVER"
+            $InstallSqlExpress = $false
 
-        if ($instances.Count -gt 0) {
-            
-                $selection = Select-SqlTarget -Instances $instances -PreReqOnly $PreReqOnly
+            $svc = Test-SqlInstanceService -InstanceName $SqlInstance
+            if (-not $svc) { throw ("Headless selected MSSQLSERVER but it was not found/valid on this system.") }
 
-            if ($selection.Mode -eq "Existing") {
-                $SqlInstance = $selection.Instance.Instance
-
-                # Only notify if script is not in PreReqOnly Mode
-                if (-not $PreReqOnly) {
-                    Warn "IMPORTANT: The account running this installer must have permission to create databases on this instance."
-                }
-                
-                Warn ("Selected SQL target: {0}\{1}" -f $SqlAddress, $SqlInstance)
-                Warn ("Database to be created: {0}" -f $SqlDatabase)
-
-                $svc = Test-SqlInstanceService -InstanceName $SqlInstance
-                if (-not $svc) { throw ("SQL instance '{0}' was selected but is not valid." -f $SqlInstance) }
-
-                if ($svc.Status -ne "Running") {
-                    if (Confirm-YesNo -Message ("SQL service is {0}. Start it now" -f $svc.Status)) {
-                        Start-Service -Name $svc.Name -ErrorAction Stop
-                        $svc.WaitForStatus("Running", "00:00:20")
-                    }
-                }
+            if ($svc.Status -ne "Running") {
+                Info ("SQL service '{0}' is {1}. Starting it..." -f $svc.Name, $svc.Status)
+                Start-Service -Name $svc.Name -ErrorAction Stop
+                $svc.WaitForStatus("Running", "00:00:20")
             }
-            else {
-                $SqlInstance = $selection.NewInstanceName
-                $InstallSqlExpress = $true
-            }
+
+            Warn ("Selected SQL target: {0}\{1}" -f $SqlAddress, $SqlInstance)
 
         }
-        # No existing SQL Installs present, determine what to do next.
         else {
-            # If in PreReqOnly mode, ask the user how they want to proceed.
-            if ($PreReqOnly) {
+            # Get all SQL Instances on the system.
+            $instances = @(Get-LocalSqlInstances)
+
+            if ($instances.Count -gt 0) {
+
+                $selection = Select-SqlTarget -Instances $instances -PreReqOnly $PreReqOnly
+
+                if ($selection.Mode -eq "Existing") {
+                    $SqlInstance = $selection.Instance.Instance
+
+                    # Only notify if script is not in PreReqOnly Mode
+                    if (-not $PreReqOnly) {
+                        Warn "IMPORTANT: The account running this installer must have permission to create databases on this instance."
+                    }
+
+                    Warn ("Selected SQL target: {0}\{1}" -f $SqlAddress, $SqlInstance)
+                    Warn ("Database to be created: {0}" -f $SqlDatabase)
+
+                    $svc = Test-SqlInstanceService -InstanceName $SqlInstance
+                    if (-not $svc) { throw ("SQL instance '{0}' was selected but is not valid." -f $SqlInstance) }
+
+                    if ($svc.Status -ne "Running") {
+                        if (Confirm-YesNo -Message ("SQL service is {0}. Start it now" -f $svc.Status)) {
+                            Start-Service -Name $svc.Name -ErrorAction Stop
+                            $svc.WaitForStatus("Running", "00:00:20")
+                        }
+                    }
+                }
+                else {
+                    $SqlInstance = $selection.NewInstanceName
+                    $InstallSqlExpress = $true
+                }
+
+            }
+            # No existing SQL Installs present, determine what to do next.
+            else {
+                # If in PreReqOnly mode, ask the user how they want to proceed.
+                if ($PreReqOnly) {
                     while ($true) {
                         Info "Script is in PreReq Only mode and no local SQL installations were found..."
                         Write-Host "Please Select an Option:"
@@ -3187,82 +3223,86 @@ try{
                             break
                         }
                         else {
-                                Write-Host "Invalid selection. Please try again." -ForegroundColor Yellow
+                            Write-Host "Invalid selection. Please try again." -ForegroundColor Yellow
                         }
                     }
                 }
-            # Script is not in PreReqOnly mode, no instances - do a default SQLEXPRESS install.
-            else {  
-                Info "No SQL instances detected. SQL Express will be installed with default instance name (SQLEXPRESS)."
-                $SqlInstance = "SQLEXPRESS"
-                $InstallSqlExpress = $true
+                # Script is not in PreReqOnly mode, no instances - do a default SQLEXPRESS install.
+                else {
+                    Info "No SQL instances detected. SQL Express will be installed with default instance name (SQLEXPRESS)."
+                    $SqlInstance = "SQLEXPRESS"
+                    $InstallSqlExpress = $true
+                }
             }
         }
 
-        # Test if Ports we require during the installation are in-use.  Bail out if conflicts occur.
-        # Define which ports to check
-        $checkPorts = 80,443,5000,5001
-        $noConflicts = $false
+        if (-not $Headless) {
+            # Test if Ports we require during the installation are in-use.  Bail out if conflicts occur.
+            # Define which ports to check
+            $checkPorts = 80,443,5000,5001
+            $noConflicts = $false
 
-        # Retrieve all listeners
-        $listeners = Get-ListeningPort -Port $checkPorts
-        $listeners = @($listeners)
+            # Retrieve all listeners
+            $listeners = Get-ListeningPort -Port $checkPorts
+            $listeners = @($listeners)
 
-        # Filter to only active listeners
-        $active = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+            # Filter to only active listeners
+            $active = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
 
-        if ($active.Count -eq 0) {
-            Ok "No conflicts detected. All required ports are available."
-            $noConflicts = $true
-        }
+            if ($active.Count -eq 0) {
+                Ok "No conflicts detected. All required ports are available."
+                $noConflicts = $true
+            }
 
-        # Separate groups
-        if (-not $noConflicts){
-            $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80,443 }
-            $kestrelConflicts      = $active | Where-Object { $_.Port -in 5000,5001 }
+            # Separate groups
+            if (-not $noConflicts){
+                $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80,443 }
+                $kestrelConflicts      = $active | Where-Object { $_.Port -in 5000,5001 }
 
-        # IIS / Reverse Proxy check
-        if ($reverseProxyConflicts) {
-            Write-Host ""
-            Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
-            foreach ($c in $reverseProxyConflicts) {
-                if ($c.IISSite) {
-                    Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
-                } else {
-                    Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+            # IIS / Reverse Proxy check
+            if ($reverseProxyConflicts) {
+                Write-Host ""
+                Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
+                foreach ($c in $reverseProxyConflicts) {
+                    if ($c.IISSite) {
+                        Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
+                    } else {
+                        Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+                    }
+                }
+
+                Write-Host ""
+                Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
+                Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
+                Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
+                Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
+
+                $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
+                if ($response -notmatch '^[Yy]$') {
+                    Write-Host ""
+                    Err "Setup aborted by user to prevent overwriting IIS configuration."
+                    exit 1
                 }
             }
 
-            Write-Host ""
-            Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
-            Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
-            Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
-            Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
-
-            $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
-            if ($response -notmatch '^[Yy]$') {
+            # Kestrel backend port conflicts
+            if ($kestrelConflicts) {
                 Write-Host ""
-                Err "Setup aborted by user to prevent overwriting IIS configuration."
+                Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
+                foreach ($c in $kestrelConflicts) {
+                    Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
+                }
+                Write-Host ""
+                Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
                 exit 1
             }
-        }
 
-        # Kestrel backend port conflicts
-        if ($kestrelConflicts) {
-            Write-Host ""
-            Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
-            foreach ($c in $kestrelConflicts) {
-                Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
+            Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
             }
-            Write-Host ""
-            Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
-            exit 1
-        }
 
-        Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
+            Start-Sleep -Seconds 8
         }
-
-        Start-Sleep -Seconds 8
+        
     }
     
     # Run the certificate setup menu if we are not only doing prereqs.
@@ -3606,8 +3646,11 @@ try{
             }
         }
 
-        # Complete.
+        # Complete. Let the user know that installation is complete.
+
+        # Ensure that the dash deliminator at the top and bottom of this block is not changed, the Azure Image uses it to write the readme. -JRR
         Write-Host "`n"
+        # Don't remove or change this, see above.
         Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
         Write-Host $asciiLogo
         if ($certInstalled) {
@@ -3645,6 +3688,7 @@ try{
         Write-Host "Open a ticket at https://tickets.powersyncpro.com/."
         Write-Host "`n"
         Write-Host "Congrats!" -ForegroundColor Green
+        # Don't remove or change this, see above.
         Write-Host "------------------------------------------------------------------------------------------------------------" -ForegroundColor Green
     }
     
