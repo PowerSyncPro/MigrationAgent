@@ -5,12 +5,13 @@
  
 .NOTES
     Date            February/2026
-    Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
+    Disclaimer:     This script is community driven and provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
     Version: 0.3
     Updated : 9th January, 2026 - Added logic to handle installing with existing SQL instances on system, SQL Express 2025, fixed a bug where VC++ install would cause script failure. JRR
     Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
-    Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only.
-    Copyright (c) 2025 Declaration Software
+    Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only. - JRR
+    Updated : 23rd February, 2026 - Fixed issues in completion only mode with SQL selection. - JRR
+    Copyright (c) 2026 Declaration Software
 #>
 
 #Requires -RunAsAdministrator
@@ -3058,22 +3059,6 @@ try{
             Warn "PowerSyncPro Service is not running on this system.  You cannot complete the installation if PowerSyncPro is not installed and running."
             exit 1
         }
-
-        # Determine the SQL instance that was used for the previous PSP install.
-        Info "Collecting SQL Information for existing PowerSyncPro installation..."
-        # Get all Installed Instances
-        $instances = @(Get-LocalSqlInstances)
-        # Ask user to select an instance (or no instance)
-        $SqlServices = Select-SqlTarget -Instances $instances -CompletionOnly $true
-        $ExternalServerInUse = $SqlServices.ExternalServerInUse
-        $SqlInstance = $SqlServices.InstanceName
-
-        if (-not $ExternalServerInUse) {
-            Info "Running completion with $SqlInstance.Name as assumed SQL Instance for existing installation..."
-        }
-        else {
-            Info "Running completion assuming an external SQL server is in use."
-        }
     }
 
     # Service Account Tasks - Only if not in PreReq / Completion Only Mode
@@ -3436,9 +3421,9 @@ try{
         }
     }
 
-    # Setup Service Dependencies in Completion Only Mode
-    # If Script is in Completion Only ($CompletionOnly) or Normal mode and if we are not using an external server (-not $ExternalServerInUse)
-    if (-not $PreReqOnly -and -not $ExternalServerInUse) {
+    # Setup Service Dependencies in Full Mode Only
+    # If Script is in Normal mode and if we are not using an external server (-not $ExternalServerInUse)
+    if (-not $PreReqOnly -and -not $CompletionOnly -and -not $ExternalServerInUse) {
         # Determine SQL Server service name for dependency
         $SQLInstanceTemp = $SqlInstance
 
