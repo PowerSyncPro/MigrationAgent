@@ -1,17 +1,18 @@
-﻿<#
+<#
 .DESCRIPTION
     The script detects the proper configuration of prerequisites required to migrate sidHistory with PowerSyncPro.
 
 .NOTES
-    Date            February 2026
     Disclaimer:     This script is provided 'AS IS'. No warranty is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: v2.5
-    Date: 13 February 2026
+    Version: v2.9
+    Date: 10 March 2026
 
 Overview:
     This version enhances reliability, evidence collection, and operational clarity for sidHistory migration prerequisite validation using PowerSyncPro.
 
-Key Improvements in v2.5:
+Key Improvements in v2.9:
+
+Active RPC high port test using rpcping
 
 Robust Audit Policy Detection
 - Handles both CSV and plain-text auditpol output formats.
@@ -428,17 +429,111 @@ function Test-AdConnectivityProfile {
 
 
 function Test-PSPTGTIDHistoryConnectivity {
-    $fqdn = Read-Host "Enter the FQDN of the SOURCE PDC Emulator:"
+    param(
+        [Parameter(Mandatory=$true)][string]$SourceFqdn
+    )
 
-    $rpcPassed = Test-Port -ComputerName $fqdn -Port 135 -Label "RPC Endpoint Mapper"
-    $smbPassed = Test-Port -ComputerName $fqdn -Port 445 -Label "SMB"
+    $rpcPassed = Test-Port -ComputerName $SourceFqdn -Port 135 -Label "RPC Endpoint Mapper"
+    $smbPassed = Test-Port -ComputerName $SourceFqdn -Port 445 -Label "SMB"
 
-    Show-RpcDynamicPortGuidance -TargetFqdn $fqdn
+    Show-RpcDynamicPortGuidance -TargetFqdn $SourceFqdn
 
     return @{
         RpcPassed = $rpcPassed
         SmbPassed = $smbPassed
     }
+}
+
+function Test-RpcHighPortConnectivity {
+    param(
+        [Parameter(Mandatory=$true)][string]$SourceFqdn,
+        [int]$ProgressSeconds = 30
+    )
+
+    Write-Host ""
+    Write-Host "RPC High Port Test (Dynamic RPC / TCP 49152-65535)" -ForegroundColor Cyan
+    Write-Host ("-" * 52) -ForegroundColor Cyan
+
+    # Check rpcping availability
+    $rpcpingCmd = Get-Command "rpcping.exe" -ErrorAction SilentlyContinue
+    if (-not $rpcpingCmd) {
+        Write-Host "RPC High Port Test: SKIPPED" -ForegroundColor Yellow
+        Write-Host "rpcping.exe was not found in the system PATH." -ForegroundColor Yellow
+        Write-Host "Ensure this server has RSAT or Windows Support Tools installed." -ForegroundColor Yellow
+        return "Skipped"
+    }
+
+    Write-Host "rpcping.exe found: $($rpcpingCmd.Source)" -ForegroundColor Cyan
+    Write-Host "Running 3 successive rpcping tests to $SourceFqdn ..." -ForegroundColor Cyan
+    Write-Host "Each test contacts the RPC Endpoint Mapper (TCP 135) and connects via a dynamically" -ForegroundColor Cyan
+    Write-Host "allocated high port — the same path used by sidHistory migration." -ForegroundColor Cyan
+    Write-Host ""
+
+    $rpcpingSource = $rpcpingCmd.Source
+    $allPassed     = $true
+
+    for ($run = 1; $run -le 3; $run++) {
+
+        $job = Start-Job -ScriptBlock {
+            param($server, $exe)
+            $output = & $exe -s $server -t ncacn_ip_tcp 2>&1
+            [PSCustomObject]@{
+                Output   = ($output | Out-String).Trim()
+                ExitCode = $LASTEXITCODE
+            }
+        } -ArgumentList $SourceFqdn, $rpcpingSource
+
+        # Progress bar for this run
+        $barWidth = 30
+        $elapsed  = 0
+
+        while ($elapsed -lt $ProgressSeconds) {
+            $done    = Wait-Job -Job $job -Timeout 1
+            $elapsed++
+            $filled  = [Math]::Min([int](($elapsed / $ProgressSeconds) * $barWidth), $barWidth)
+            $bar     = ("#" * $filled) + ("." * ($barWidth - $filled))
+            Write-Host "`r  Run $run / 3  [$bar] ${elapsed}s  " -NoNewline -ForegroundColor Cyan
+            if ($done) { break }
+        }
+
+        if ($job.State -eq 'Running') {
+            Write-Host "`r  Run $run / 3  [##############################] still running...  " -NoNewline -ForegroundColor Yellow
+            Wait-Job -Job $job | Out-Null
+        }
+
+        Write-Host ""
+
+        $result = Receive-Job -Job $job -ErrorAction SilentlyContinue
+        Remove-Job -Job $job -Force | Out-Null
+
+        if ($null -eq $result) {
+            Write-Host "  Run $run : FAILED  (no result received from job)" -ForegroundColor Red
+            $allPassed = $false
+        }
+        else {
+            $passed = ($result.ExitCode -eq 0) -or ($result.Output -imatch "Completed\s+\d+\s+call")
+            if ($passed) {
+                Write-Host ("  Run {0} : PASSED  — {1}" -f $run, $result.Output) -ForegroundColor Green
+            }
+            else {
+                Write-Host ("  Run {0} : FAILED  — {1}" -f $run, $result.Output) -ForegroundColor Red
+                $allPassed = $false
+            }
+        }
+
+        Write-Host ""
+    }
+
+    if ($allPassed) {
+        Write-Host "RPC High Port Test: PASSED" -ForegroundColor Green
+        Write-Host "All 3 rpcping runs confirmed dynamic RPC high-port connectivity to $SourceFqdn." -ForegroundColor Green
+    }
+    else {
+        Write-Host "RPC High Port Test: FAILED" -ForegroundColor Red
+        Write-Host "One or more rpcping runs failed. Verify TCP 49152-65535 is permitted from this server to $SourceFqdn." -ForegroundColor Red
+    }
+
+    return $allPassed
 }
 
 function Test-PSPsidHistoryConnectivity {
@@ -939,9 +1034,12 @@ do {
             Write-Host ("=" * 60) -ForegroundColor Green
 
             $pdcPassed    = Get-PDCeRole
-            $connectivity = Test-PSPTGTIDHistoryConnectivity
+            $sourceFqdn   = Read-Host "Enter the FQDN of the SOURCE PDC Emulator"
+            $connectivity = Test-PSPTGTIDHistoryConnectivity -SourceFqdn $sourceFqdn
             $rpcPassed    = $connectivity.RpcPassed
             $smbPassed    = $connectivity.SmbPassed
+
+            $rpcHighPassed = Test-RpcHighPortConnectivity -SourceFqdn $sourceFqdn
 
             $accountResults     = Get-TargetAccountPermissions
             $accountPermissions = $accountResults.Permissions
@@ -964,6 +1062,7 @@ do {
                 "PDCe Test"                    = $pdcPassed
                 "RPC Endpoint Test (TCP 135)"   = $rpcPassed
                 "SMB Test (TCP 445)"            = $smbPassed
+                "RPC High Port Test"            = $rpcHighPassed
                 "Account Permissions"           = $accountPermissions
                 "Service Account SAM/UPN test"  = $samUpn
                 "Audit Policy Test"             = $auditPassed
