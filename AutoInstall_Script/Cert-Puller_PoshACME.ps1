@@ -14,8 +14,9 @@
 
 .NOTES
 Date:           November/2025
-Version:        0.3
+Version:        0.4
 Update:         Added -ForcePostInstall flag and hybrid key logic.
+Updated : 10th March, 2026 - Added support to set a different Kestrel Port
 Disclaimer:     This script is provided 'AS IS' with no warranty.
 Copyright (c)   2025 Declaration Software
 
@@ -54,7 +55,10 @@ param (
     [switch]$ForcePostInstall,
 
     [Parameter(Mandatory=$false)]
-    [switch]$Help
+    [switch]$Help,
+
+    [Parameter(Mandatory=$false)]
+    [int]$KestrelHttpsPort = 5001
 )
 # ------------------ Logging Functions ------------------
 function Info  { param($Message) Write-Host "[*] $Message" -ForegroundColor Cyan }
@@ -322,10 +326,25 @@ try {
         $json = Get-Content $appSettingsPath -Raw | ConvertFrom-Json
         $actualSubject = $newCert.GetNameInfo('SimpleName', $false)
 
+        # Resolve the port to use: explicit param > appsettings.json existing URL > default 5001
+        if ($KestrelHttpsPort -eq 0) {
+            if ($json.Kestrel.Endpoints.PSObject.Properties.Name -contains "Https") {
+                $existingUrl = $json.Kestrel.Endpoints.Https.Url
+                if ($existingUrl -match ':(\d+)$') {
+                    $KestrelHttpsPort = [int]$Matches[1]
+                    Info "Using Kestrel HTTPS port $KestrelHttpsPort from appsettings.json."
+                }
+            }
+            if ($KestrelHttpsPort -eq 0) {
+                $KestrelHttpsPort = 5001
+                Info "No HTTPS port found in appsettings.json, defaulting to $KestrelHttpsPort."
+            }
+        }
+
         if ($json.Kestrel.Endpoints.PSObject.Properties.Name -notcontains "Https") {
-            Warn "HTTPS endpoint not found. Creating one on port 5001."
+            Warn "HTTPS endpoint not found. Creating one on port $KestrelHttpsPort."
             $json.Kestrel.Endpoints | Add-Member -MemberType NoteProperty -Name "Https" -Value @{
-                Url       = "https://*:5001"
+                Url       = "https://*:$KestrelHttpsPort"
                 Protocols = "Http1AndHttp2"
                 Certificate = @{
                     Subject      = $actualSubject
