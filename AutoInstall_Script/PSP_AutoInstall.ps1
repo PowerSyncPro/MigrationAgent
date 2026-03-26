@@ -11,6 +11,7 @@
     Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
     Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only. - JRR
     Updated : 23rd February, 2026 - Fixed issues in completion only mode with SQL selection. - JRR
+    Updated : 10th March, 2026 - Added -KestrelHttpPort / -KestrelHttpsPort flags for custom Kestrel ports. - JRR
     Copyright (c) 2026 Declaration Software
 #>
 
@@ -37,7 +38,13 @@ param (
     # Run headless - reduces manual input from user for automation. Only to be used with the $PreReqOnly flags.
     # --> Removes user input commitment, assumes using the default SQL instance if available
     # Internal Use Only
-    [switch]$Headless = $false
+    [switch]$Headless = $false,
+
+    # Override the default Kestrel HTTP backend port (default 5000).
+    [int]$KestrelHttpPort = 5000,
+
+    # Override the default Kestrel HTTPS backend port (default 5001).
+    [int]$KestrelHttpsPort = 5001
 )
 
 Set-StrictMode -Version Latest
@@ -1059,7 +1066,8 @@ function Install-WebConfig {
     param(
         [string]$FrontendHost,
         [string]$TargetFolder,
-        [string]$TargetFile
+        [string]$TargetFile,
+        [int]$KestrelHttpPort = 5000
     )
 
     # Build paths
@@ -1109,12 +1117,12 @@ function Install-WebConfig {
           <conditions>
             <add input="{REQUEST_URI}" pattern="^/.well-known/" negate="true" />
           </conditions>
-          <action type="Rewrite" url="http://localhost:5000/{R:1}" />
+          <action type="Rewrite" url="http://localhost:$KestrelHttpPort/{R:1}" />
         </rule>
       </rules>
       <outboundRules>
         <rule name="PowerSyncProReverseProxyOutboundRule1" preCondition="PowerSyncProResponseIsHtml">
-          <match filterByTags="A, Form, Img" pattern="^http(s)?://localhost:5000/(.*)" />
+          <match filterByTags="A, Form, Img" pattern="^http(s)?://localhost:$KestrelHttpPort/(.*)" />
           <action type="Rewrite" value="$FrontendUrl{R:2}" />
         </rule>
         <preConditions>
@@ -1391,7 +1399,8 @@ function Install-HostsFile {
 function Install-ACMECertificate{
   param(
     [string]$FrontendHost,
-    [string]$ContactEmail
+    [string]$ContactEmail,
+    [int]$KestrelHttpsPort = 5001
   )
   
   # -----------------------------------
@@ -1419,7 +1428,7 @@ function Install-ACMECertificate{
   
   # Run Cert-Puller_PoshACME.ps1 with provided options above.
   Info "Beginning certificate request for $FrontendHost with contact e-mail $ContactEmail"
-  & C:\Scripts\Cert-Puller_PoshACME.ps1 -Domain $FrontendHost -ContactEmail $ContactEmail
+  & C:\Scripts\Cert-Puller_PoshACME.ps1 -Domain $FrontendHost -ContactEmail $ContactEmail -KestrelHttpsPort $KestrelHttpsPort
 }
 function Install-CustomPfxCertificate {
     <#
@@ -1438,7 +1447,9 @@ function Install-CustomPfxCertificate {
 
         [string]$SiteName = "Default Web Site",
 
-        [string]$AppSettingsPath = "C:\Program Files\PowerSyncPro\appsettings.json"
+        [string]$AppSettingsPath = "C:\Program Files\PowerSyncPro\appsettings.json",
+
+        [int]$KestrelHttpsPort = 5001
     )
 
     try {
@@ -1495,9 +1506,9 @@ function Install-CustomPfxCertificate {
                 $json = Get-Content $AppSettingsPath -Raw | ConvertFrom-Json
 
                 if ($json.Kestrel.Endpoints.PSObject.Properties.Name -notcontains "Https") {
-                    Warn "HTTPS endpoint not found in appsettings.json. Creating one on port 5001."
+                    Warn "HTTPS endpoint not found in appsettings.json. Creating one on port $KestrelHttpsPort."
                     $json.Kestrel.Endpoints | Add-Member -MemberType NoteProperty -Name "Https" -Value @{
-                        Url       = "https://*:5001"
+                        Url       = "https://*:$KestrelHttpsPort"
                         Protocols = "Http1AndHttp2"
                         Certificate = @{
                             Subject      = $actualSubject
@@ -1581,7 +1592,9 @@ function Install-SelfSignedCertificate {
 
         [string]$SiteName = "Default Web Site",
 
-        [string]$AppSettingsPath = "C:\Program Files\PowerSyncPro\appsettings.json"
+        [string]$AppSettingsPath = "C:\Program Files\PowerSyncPro\appsettings.json",
+
+        [int]$KestrelHttpsPort = 5001
     )
 
     try {
@@ -1644,9 +1657,9 @@ function Install-SelfSignedCertificate {
             $json = Get-Content $AppSettingsPath -Raw | ConvertFrom-Json
 
             if ($json.Kestrel.Endpoints.PSObject.Properties.Name -notcontains "Https") {
-                Warn "HTTPS endpoint not found in appsettings.json. Creating one on port 5001."
+                Warn "HTTPS endpoint not found in appsettings.json. Creating one on port $KestrelHttpsPort."
                 $json.Kestrel.Endpoints | Add-Member -MemberType NoteProperty -Name "Https" -Value @{
-                    Url       = "https://*:5001"
+                    Url       = "https://*:$KestrelHttpsPort"
                     Protocols = "Http1AndHttp2"
                     Certificate = @{
                         Subject      = $DnsName
@@ -3126,6 +3139,9 @@ try{
         $SqlPort     = "1433"
         $SqlDatabase = "PowerSyncProDB"
 
+        # Kestrel backend ports — set via script params (defaults: HTTP 5000 / HTTPS 5001)
+        # May be changed below if conflicts are detected or user customises.
+
         $InstallSqlExpress = $false
 
         # Headless mode: assume local FULL SQL default instance (MSSQLSERVER)
@@ -3222,67 +3238,133 @@ try{
         }
 
         if (-not $Headless) {
-            # Test if Ports we require during the installation are in-use.  Bail out if conflicts occur.
-            # Define which ports to check
-            $checkPorts = 80,443,5000,5001
+            # -------------------------------------------------------------------
+            # Kestrel port selection
+            # If 5000/5001 are free, offer the user the option to customize.
+            # If they are in use, the user must choose alternative ports.
+            # -------------------------------------------------------------------
+            $kestrelInUse = @(Get-ListeningPort -Port $KestrelHttpPort,$KestrelHttpsPort |
+                              Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+
+            $needCustomPorts = $false
+
+            if ($kestrelInUse) {
+                Write-Host ""
+                Warn "[WARNING] Default Kestrel Port Conflicts Detected"
+                foreach ($c in $kestrelInUse) {
+                    Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+                }
+                Write-Host ""
+                Write-Host ("The default Kestrel ports ({0} HTTP / {1} HTTPS) are already in use." -f $KestrelHttpPort, $KestrelHttpsPort) -ForegroundColor Yellow
+                Write-Host "You must choose alternative ports for the PowerSyncPro backend." -ForegroundColor Yellow
+                $needCustomPorts = $true
+            } else {
+                Ok ("Kestrel ports available and confirmed: HTTP {0} / HTTPS {1}" -f $KestrelHttpPort, $KestrelHttpsPort)
+            }
+
+            if ($needCustomPorts) {
+                Write-Host ""
+
+                # --- HTTP port ---
+                do {
+                    $raw = Read-Host ("  Enter Kestrel HTTP port [default: {0}]" -f $KestrelHttpPort)
+                    if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "$KestrelHttpPort" }
+                    $p = 0
+                    $portOk = [int]::TryParse($raw, [ref]$p) -and $p -ge 1024 -and $p -le 65535
+                    if (-not $portOk) {
+                        Write-Host "  Invalid port. Enter a number between 1024 and 65535." -ForegroundColor Red
+                    } else {
+                        $inUse = @(Get-ListeningPort -Port $p | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+                        if ($inUse) {
+                            Write-Host ("  Port {0} is in use by '{1}'. Choose a different port." -f $p, $inUse[0].Process) -ForegroundColor Red
+                            $portOk = $false
+                        }
+                    }
+                } while (-not $portOk)
+                $KestrelHttpPort = $p
+
+                # --- HTTPS port ---
+                do {
+                    $raw = Read-Host ("  Enter Kestrel HTTPS port [default: {0}]" -f $KestrelHttpsPort)
+                    if ([string]::IsNullOrWhiteSpace($raw)) { $raw = "$KestrelHttpsPort" }
+                    $p = 0
+                    $portOk = [int]::TryParse($raw, [ref]$p) -and $p -ge 1024 -and $p -le 65535
+                    if (-not $portOk) {
+                        Write-Host "  Invalid port. Enter a number between 1024 and 65535." -ForegroundColor Red
+                    } elseif ($p -eq $KestrelHttpPort) {
+                        Write-Host ("  HTTPS port must differ from HTTP port ({0})." -f $KestrelHttpPort) -ForegroundColor Red
+                        $portOk = $false
+                    } else {
+                        $inUse = @(Get-ListeningPort -Port $p | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+                        if ($inUse) {
+                            Write-Host ("  Port {0} is in use by '{1}'. Choose a different port." -f $p, $inUse[0].Process) -ForegroundColor Red
+                            $portOk = $false
+                        }
+                    }
+                } while (-not $portOk)
+                $KestrelHttpsPort = $p
+
+                Ok ("Kestrel ports set to: HTTP {0} / HTTPS {1}" -f $KestrelHttpPort, $KestrelHttpsPort)
+            }
+
+            # -------------------------------------------------------------------
+            # Full port conflict check (80, 443, and the chosen Kestrel ports)
+            # -------------------------------------------------------------------
+            $checkPorts  = 80, 443, $KestrelHttpPort, $KestrelHttpsPort
             $noConflicts = $false
 
-            # Retrieve all listeners
             $listeners = Get-ListeningPort -Port $checkPorts
-            $listeners = @($listeners)
-
-            # Filter to only active listeners
-            $active = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
+            $listeners  = @($listeners)
+            $active     = @($listeners | Where-Object { $_.State -eq 'LISTENING' -and $_.LocalAddr })
 
             if ($active.Count -eq 0) {
                 Ok "No conflicts detected. All required ports are available."
                 $noConflicts = $true
             }
 
-            # Separate groups
-            if (-not $noConflicts){
-                $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80,443 }
-                $kestrelConflicts      = $active | Where-Object { $_.Port -in 5000,5001 }
+            if (-not $noConflicts) {
+                $reverseProxyConflicts = $active | Where-Object { $_.Port -in 80, 443 }
+                $kestrelConflicts      = $active | Where-Object { $_.Port -in $KestrelHttpPort, $KestrelHttpsPort }
 
-            # IIS / Reverse Proxy check
-            if ($reverseProxyConflicts) {
-                Write-Host ""
-                Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
-                foreach ($c in $reverseProxyConflicts) {
-                    if ($c.IISSite) {
-                        Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
-                    } else {
-                        Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+                # IIS / Reverse Proxy check
+                if ($reverseProxyConflicts) {
+                    Write-Host ""
+                    Warn "[WARNING] Reverse Proxy (IIS) Port Conflicts Detected"
+                    foreach ($c in $reverseProxyConflicts) {
+                        if ($c.IISSite) {
+                            Write-Host (" Port {0} in use by IIS site '{1}' (Process: {2})" -f $c.Port, $c.IISSite, $c.Process) -ForegroundColor Yellow
+                        } else {
+                            Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Yellow
+                        }
+                    }
+
+                    Write-Host ""
+                    Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
+                    Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
+                    Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
+                    Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
+
+                    $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
+                    if ($response -notmatch '^[Yy]$') {
+                        Write-Host ""
+                        Err "Setup aborted by user to prevent overwriting IIS configuration."
+                        exit 1
                     }
                 }
 
-                Write-Host ""
-                Write-Host "Port 80 or 443 are used by IIS or another process." -ForegroundColor Yellow
-                Write-Host "If you continue, current IIS configuration may be modified or overwritten." -ForegroundColor Yellow
-                Write-Host "If you have a default IIS configuration on this system, you can safely ignore this warning." -ForegroundColor Yellow
-                Write-Host "If you are using IIS on this system for another purpose, you should *NOT* continue." -ForegroundColor Yellow
-
-                $response = Read-Host "Do you want to continue setup anyway? (Y/N)"
-                if ($response -notmatch '^[Yy]$') {
+                # Kestrel conflict safeguard (should not trigger after selection above)
+                if ($kestrelConflicts) {
                     Write-Host ""
-                    Err "Setup aborted by user to prevent overwriting IIS configuration."
+                    Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
+                    foreach ($c in $kestrelConflicts) {
+                        Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
+                    }
+                    Write-Host ""
+                    Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
                     exit 1
                 }
-            }
 
-            # Kestrel backend port conflicts
-            if ($kestrelConflicts) {
-                Write-Host ""
-                Err "[ERROR] PowerSyncPro Backend Port Conflicts Detected"
-                foreach ($c in $kestrelConflicts) {
-                    Write-Host (" Port {0} in use by process '{1}' (PID {2})" -f $c.Port, $c.Process, $c.ProcId) -ForegroundColor Red
-                }
-                Write-Host ""
-                Write-Host "PowerSyncPro will not be able to bind to these ports. Please review the processes using them and reconfigure them if possible." -ForegroundColor Red
-                exit 1
-            }
-
-            Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
+                Ok "Port check complete. No blocking conflicts detected. Continuing setup..."
             }
 
             Start-Sleep -Seconds 8
@@ -3413,11 +3495,13 @@ try{
         if ($UseServiceAccount -eq $true) {
             Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort `
                         -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost `
+                        -httpPort $KestrelHttpPort -httpsPort $KestrelHttpsPort `
                         -PSPServiceUser $PSPServiceUser -PSPServicePassword $PSPServicePassword
         }
         else {
             Install-PSP -PSPUrl $PSPUrl -tempDir $TempDir -SqlAddress $SqlAddress -SqlPort $SqlPort `
-                        -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost
+                        -SqlInstance $SqlInstance -SqlDatabase $SqlDatabase -FrontendHost $FrontendHost `
+                        -httpPort $KestrelHttpPort -httpsPort $KestrelHttpsPort
         }
     }
 
@@ -3478,7 +3562,7 @@ try{
 
         # Install Custom WebConifg
         Info "Installing Customized $WebConfigName to $WebConfigFolder"
-        Install-WebConfig -FrontendHost $FrontendHost -TargetFolder $WebConfigFolder -TargetFile $WebConfigName
+        Install-WebConfig -FrontendHost $FrontendHost -TargetFolder $WebConfigFolder -TargetFile $WebConfigName -KestrelHttpPort $KestrelHttpPort
 
         # Setup IIS and Unlock Required Sections
         Info "Unlocking configuration section for web.config..."
@@ -3504,7 +3588,7 @@ try{
                     Add-FirewallRuleForPort -Port 80
                     # Run Cert Puller Script to Install Scripts
                     Info "Running CertPuller Script to grab LetsEncrypt Certificate for $FrontendHost..."
-                    Install-ACMECertificate -FrontendHost $FrontendHost -ContactEmail $CertConfig.Email
+                    Install-ACMECertificate -FrontendHost $FrontendHost -ContactEmail $CertConfig.Email -KestrelHttpsPort $KestrelHttpsPort
 
                     if ([string]::IsNullOrWhiteSpace($PSPServiceUser) -or
                         $PSPServiceUser -eq "LocalSystem" -or
@@ -3571,7 +3655,7 @@ try{
             'BYOC' {
                 Info "Installation tasks completed, installing BYOC certificate for $FrontendHost..."
                 try{
-                    Install-CustomPfxCertificate -PfxPath $CertConfig.PfxPath -Password $CertConfig.PfxPass
+                    Install-CustomPfxCertificate -PfxPath $CertConfig.PfxPath -Password $CertConfig.PfxPass -KestrelHttpsPort $KestrelHttpsPort
                     $certInstalled = $true
                 } catch {
                     Warn "BYOC certificate install failed: $($_.Exception.Message)"
@@ -3581,7 +3665,7 @@ try{
             'SelfSigned' {
                 try{
                     Info "Installation tasks completed, installing self-signed certificate for $FrontendHost..."
-                    Install-SelfSignedCertificate -DnsName $FrontendHost
+                    Install-SelfSignedCertificate -DnsName $FrontendHost -KestrelHttpsPort $KestrelHttpsPort
                     $certInstalled = $true
                 } catch {
                     Warn "Self Signed certificate install failed: $($_.Exception.Message)"
