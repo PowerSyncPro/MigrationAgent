@@ -13,8 +13,9 @@
 .NOTES
     Date            October/2025
     Disclaimer:     This script is provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 0.1
-    Updated: Initial Release.
+    Version: 0.2
+    Updated : Initial Release.
+    Updated : 10th March, 2026 - Added support to set a different Kestrel Port
     Copyright (c) 2025 Declaration Software
 
 .PARAMETER PfxPath
@@ -35,7 +36,8 @@ param(
     [string]$PfxPath,
     [string]$StoreLocation = "Cert:\LocalMachine\My",
     [string]$AppSettingsPath = "C:\Program Files\PowerSyncPro\appsettings.json",
-    [string]$SiteName = "Default Web Site"
+    [string]$SiteName = "Default Web Site",
+    [int]$KestrelHttpsPort = 5001
 )
 
 $asciiLogo=@"
@@ -188,9 +190,9 @@ try {
             $actualSubject = $newCert.GetNameInfo('SimpleName', $false)
 
             if ($json.Kestrel.Endpoints.PSObject.Properties.Name -notcontains "Https") {
-                Write-Host "Adding HTTPS endpoint configuration..." -ForegroundColor Yellow
+                Write-Host "Adding HTTPS endpoint configuration on port $KestrelHttpsPort..." -ForegroundColor Yellow
                 $json.Kestrel.Endpoints | Add-Member -MemberType NoteProperty -Name "Https" -Value @{
-                    Url       = "https://*:5001"
+                    Url       = "https://*:$KestrelHttpsPort"
                     Protocols = "Http1AndHttp2"
                     Certificate = @{
                         Subject      = $actualSubject
@@ -200,6 +202,12 @@ try {
                     }
                 }
             } else {
+                # Read the port from the existing URL so we preserve it
+                $existingUrl = $json.Kestrel.Endpoints.Https.Url
+                if ($existingUrl -match ':(\d+)$') {
+                    $KestrelHttpsPort = [int]$Matches[1]
+                    Write-Host "Detected Kestrel HTTPS port $KestrelHttpsPort from appsettings.json." -ForegroundColor DarkGray
+                }
                 $json.Kestrel.Endpoints.Https.Certificate.Subject = $actualSubject
             }
 
