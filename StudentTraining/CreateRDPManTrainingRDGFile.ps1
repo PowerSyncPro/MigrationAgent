@@ -90,17 +90,17 @@ if ($serverName -match '\d+$') {
 # Define the 6 machines with their display names, connection addresses (IP or hostname), and assigned credential keys
 # Assign credentials to machines (example mapping: adjust as needed)
 $machines = @(
-    @{ DisplayName = "SRC$randomChars-da"; Address = "192.168.249.8"; CredKey = "Cred4" }
-    @{ DisplayName = "TRG$randomChars-da"; Address = "192.168.249.9"; CredKey = "Cred3" } # Shares Cred1
-    @{ DisplayName = "PSPRA$randomChars-da"; Address = "192.168.249.5"; CredKey = "Cred3" }
-    @{ DisplayName = "WSTN1$randomChars-localaccount"; Address = "192.168.249.11"; CredKey = "Cred5" }
-    @{ DisplayName = "WSTN2$randomChars-localaccount"; Address = "192.168.249.21"; CredKey = "Cred5" } # Shares Cred2
-    @{ DisplayName = "WSTN1$randomChars-user-source"; Address = "192.168.249.11"; CredKey = "Cred2" }
-    @{ DisplayName = "WSTN2$randomChars-user-source"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
-    @{ DisplayName = "WSTN1$randomChars-user-target"; Address = "192.168.249.11"; CredKey = "Cred1" }
-    @{ DisplayName = "WSTN2$randomChars-user-target"; Address = "192.168.249.21"; CredKey = "Cred1" } # Shares Cred2
-    @{ DisplayName = "WSTN1$randomChars-Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
-    @{ DisplayName = "WSTN2$randomChars-Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
+    @{ DisplayName = "Source DC $randomChars"; Address = "192.168.249.8"; CredKey = "Cred4" }
+    @{ DisplayName = "Target DC $randomChars"; Address = "192.168.249.9"; CredKey = "Cred3" } # Shares Cred1
+    @{ DisplayName = "Remote sync agent $randomChars"; Address = "192.168.249.5"; CredKey = "Cred3" }
+    @{ DisplayName = "Workstn 1 $randomChars localaccount"; Address = "192.168.249.11"; CredKey = "Cred5" }
+    @{ DisplayName = "Workstn 2 $randomChars localaccount"; Address = "192.168.249.21"; CredKey = "Cred5" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars trn.user (source)"; Address = "192.168.249.11"; CredKey = "Cred2" }
+    @{ DisplayName = "Workstn 2 $randomChars trn.user (source)"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars trn.user (target)"; Address = "192.168.249.11"; CredKey = "Cred1" }
+    @{ DisplayName = "Workstn 2 $randomChars trn.user (target)"; Address = "192.168.249.21"; CredKey = "Cred1" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars -Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
+    @{ DisplayName = "Workstn 2 $randomChars -Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
 )
 # Output file path for the .rdg file (change if needed)
 $rdgFilePath = "C:\binaries\PSPEnvironment.rdg" # e.g., "C:\Temp\MyRDCMan.rdg"
