@@ -4,13 +4,15 @@
 
 .NOTES
     Disclaimer:     This script is provided 'AS IS'. No warranty is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: v2.9
-    Date: 10 March 2026
+    Version: v2.10
+    Date:  24 March 2026
 
 Overview:
     This version enhances reliability, evidence collection, and operational clarity for sidHistory migration prerequisite validation using PowerSyncPro.
 
-Key Improvements in v2.9:
+Key Improvements in v2.10:
+
+Added NTLM check for source PDCe
 
 Active RPC high port test using rpcping
 
@@ -784,6 +786,77 @@ function Get-TargetAccountPermissions {
 }
 
 # ----------------------
+# LM Compatibility Level check (Source PDCe only)
+# ----------------------
+function Get-LmCompatibilityLevel {
+    Write-Host ""
+    Write-Host "LM Compatibility Level (NTLM Authentication) Check" -ForegroundColor Cyan
+    Write-Host ("-" * 52) -ForegroundColor Cyan
+    Write-Host "This check verifies that the source PDC Emulator is not configured" -ForegroundColor Cyan
+    Write-Host "to refuse NTLM authentication (level 5), which would block the" -ForegroundColor Cyan
+    Write-Host "DsAddSidHistory RPC call from the target PDC Emulator." -ForegroundColor Cyan
+    Write-Host ""
+
+    $regPath  = "HKLM:\System\CurrentControlSet\Control\Lsa"
+    $regValue = "LmCompatibilityLevel"
+
+    try {
+        $prop  = Get-ItemProperty -Path $regPath -Name $regValue -ErrorAction Stop
+        $level = $prop.$regValue
+    }
+    catch {
+        # Key absent — OS default applies (level 3 on Server 2008 R2 and later)
+        Write-Host "LmCompatibilityLevel registry value is not present." -ForegroundColor Yellow
+        Write-Host "OS default applies (level 3 = NTLMv2 only on Server 2008 R2+)." -ForegroundColor Yellow
+        Write-Host "LM Compatibility Level Check: PASSED (OS default is safe)" -ForegroundColor Green
+        Write-Host ""
+        return $true
+    }
+
+    $description = switch ($level) {
+        0 { "Send LM & NTLM responses" }
+        1 { "Send LM & NTLM — use NTLMv2 session security if negotiated" }
+        2 { "Send NTLMv2 response only" }
+        3 { "Send NTLMv2 response only (client-side enforcement)" }
+        4 { "Send NTLMv2 only; DC refuses LM" }
+        5 { "Send NTLMv2 only; DC refuses LM and NTLMv1 (most restrictive)" }
+        default { "Unknown level ($level)" }
+    }
+
+    Write-Host "LmCompatibilityLevel : $level" -ForegroundColor Cyan
+    Write-Host "Description          : $description" -ForegroundColor Cyan
+    Write-Host ""
+
+    if ($level -eq 5) {
+        Write-Host "LM Compatibility Level Check: FAILED" -ForegroundColor Red
+        Write-Host "Level 5 means this DC refuses NTLMv1. The DsAddSidHistory RPC call" -ForegroundColor Red
+        Write-Host "initiated by the target PDC Emulator authenticates to this source PDC" -ForegroundColor Red
+        Write-Host "Emulator over TCP — if NTLM negotiation falls back to NTLMv1, this DC" -ForegroundColor Red
+        Write-Host "will reject it and the sidHistory migration will fail." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Recommended action: Confirm the target PDC Emulator and PSP server are" -ForegroundColor Yellow
+        Write-Host "enforcing NTLMv2 outbound (LmCompatibilityLevel >= 3). If they are," -ForegroundColor Yellow
+        Write-Host "level 5 on this source DC may be acceptable. If unsure, consider" -ForegroundColor Yellow
+        Write-Host "temporarily lowering to level 3 during the migration window." -ForegroundColor Yellow
+        Write-Host ""
+        return $false
+    }
+    elseif ($level -le 2) {
+        Write-Host "LM Compatibility Level Check: PASSED (with advisory)" -ForegroundColor Yellow
+        Write-Host "Level $level permits LM/NTLMv1 — migration will succeed, but NTLM" -ForegroundColor Yellow
+        Write-Host "hardening is below recommended baseline. Consider raising to level 3" -ForegroundColor Yellow
+        Write-Host "or higher after the migration window." -ForegroundColor Yellow
+        Write-Host ""
+        return $true
+    }
+    else {
+        Write-Host "LM Compatibility Level Check: PASSED" -ForegroundColor Green
+        Write-Host ""
+        return $true
+    }
+}
+
+# ----------------------
 # Audit policy checks (advanced subcategories only)
 # ----------------------
 function Get-ADAuditPolicies {
@@ -891,8 +964,8 @@ function Get-ADAuditPolicies {
     Write-Host ("=" * 60) -ForegroundColor Green
     Write-Host ""
 
-    Write-Host "Default Domain Controllers Policy | Computer Configuration | Policies | Windows Settings | Security Settings | Advanced Audit Policy Configuration | Audit Policies" -ForegroundColor Magenta
-    Write-Host ("-" * 60) -ForegroundColor Magenta
+    Write-Host "Default Domain Controllers Policy | Computer Configuration | Policies | Windows Settings | Security Settings | Advanced Audit Policy Configuration | Audit Policies" -ForegroundColor Yellow
+    Write-Host ("-" * 60) -ForegroundColor Yellow
     Write-Host ""
 
     foreach ($group in $advancedSubcategories.Keys) {
@@ -1004,6 +1077,7 @@ do {
             $pdcPassed          = Get-PDCeRole
             $groupPassed        = Get-SourceGroupCheck
             $tcpipPassed        = Get-TcpipClientSupport
+            $lmCompatPassed     = Get-LmCompatibilityLevel
             $accountPermissions = Get-SourceAccountPermissions
             $auditPassed        = Get-ADAuditPolicies
 
@@ -1017,13 +1091,14 @@ do {
             $envExportOk   = Export-EnvironmentSnapshot -Path $envCsvPath -Context "Source PDCe"
 
             $summaryResults = [ordered]@{
-                "Group Check"             = $groupPassed
-                "Account Permissions"     = $accountPermissions
-                "Audit Policy Test"       = $auditPassed
-                "PDCe Test"               = $pdcPassed
-                "TcpipClientSupport Test" = $tcpipPassed
-                "Audit Snapshot Export"   = $(if ($auditExportOk) { "Passed" } else { "Failed" })
-                "Env Snapshot Export"     = $(if ($envExportOk)   { "Passed" } else { "Failed" })
+                "Group Check"                  = $groupPassed
+                "Account Permissions"          = $accountPermissions
+                "Audit Policy Test"            = $auditPassed
+                "PDCe Test"                    = $pdcPassed
+                "TcpipClientSupport Test"      = $tcpipPassed
+                "LM Compatibility Level Test"  = $lmCompatPassed
+                "Audit Snapshot Export"        = $(if ($auditExportOk) { "Passed" } else { "Failed" })
+                "Env Snapshot Export"          = $(if ($envExportOk)   { "Passed" } else { "Failed" })
             }
 
             Display-Summary -results $summaryResults
