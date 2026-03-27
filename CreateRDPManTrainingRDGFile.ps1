@@ -79,7 +79,7 @@ $credentials = @{
     "Cred3" = @{ UserName = "trn.da"; Password = "uoYBP4IgZ7n8M#hU"; Domain = "PSPTarget.local" }
     "Cred4" = @{ UserName = "trn.da"; Password = "Oz#5VqCE5esrvIQ5"; Domain = "PSPSource.local" }
     "Cred5" = @{ UserName = "trn.local"; Password = "y9r3M%UHG3Ocd8Qc"; Domain = "." }
-    "Cred6" = @{ UserName = "unknown"; Password = "unknown"; Domain = "PSPSource.local" }
+    "Cred6" = @{ UserName = "AzureAD\"; Password = "unknown"; Domain = "AzureAD" }
 }
 $serverName = $env:COMPUTERNAME # Or use [System.Environment]::MachineName
 # Match trailing digits
@@ -93,14 +93,14 @@ $machines = @(
     @{ DisplayName = "SRC$randomChars-da"; Address = "192.168.249.8"; CredKey = "Cred4" }
     @{ DisplayName = "TRG$randomChars-da"; Address = "192.168.249.9"; CredKey = "Cred3" } # Shares Cred1
     @{ DisplayName = "PSPRA$randomChars-da"; Address = "192.168.249.5"; CredKey = "Cred3" }
-    @{ DisplayName = "WSTN1$randomChars-local"; Address = "192.168.249.11"; CredKey = "Cred5" }
-    @{ DisplayName = "WSTN2$randomChars-local"; Address = "192.168.249.21"; CredKey = "Cred5" } # Shares Cred2
+    @{ DisplayName = "WSTN1$randomChars-localaccount"; Address = "192.168.249.11"; CredKey = "Cred5" }
+    @{ DisplayName = "WSTN2$randomChars-localaccount"; Address = "192.168.249.21"; CredKey = "Cred5" } # Shares Cred2
     @{ DisplayName = "WSTN1$randomChars-user-source"; Address = "192.168.249.11"; CredKey = "Cred2" }
     @{ DisplayName = "WSTN2$randomChars-user-source"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
     @{ DisplayName = "WSTN1$randomChars-user-target"; Address = "192.168.249.11"; CredKey = "Cred1" }
     @{ DisplayName = "WSTN2$randomChars-user-target"; Address = "192.168.249.21"; CredKey = "Cred1" } # Shares Cred2
-    @{ DisplayName = "WSTN1$randomChars-custom"; Address = "192.168.249.11"; CredKey = "Cred6" }
-    @{ DisplayName = "WSTN2$randomChars-custom"; Address = "192.168.249.21"; CredKey = "Cred6" } # Shares Cred2
+    @{ DisplayName = "WSTN1$randomChars-Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
+    @{ DisplayName = "WSTN2$randomChars-Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
 )
 # Output file path for the .rdg file (change if needed)
 $rdgFilePath = "C:\binaries\PSPEnvironment.rdg" # e.g., "C:\Temp\MyRDCMan.rdg"
@@ -159,6 +159,20 @@ foreach ($machine in $machines) {
           <fullScreen>False</fullScreen>
           <colorDepth>24</colorDepth>
         </remoteDesktop>
+
+"@
+    }
+
+    # Add security settings only for the last 2 machines
+    if ($displayName -like "*-Entra") {
+        $serverXml += @"
+        <securitySettings inherit="None">
+          <authentication>Warn</authentication>
+          <enableCredSspSupport>True</enableCredSspSupport>
+          <enableRdsAadAuth>True</enableRdsAadAuth>
+          <restrictedAdmin>False</restrictedAdmin>
+          <remoteGuard>False</remoteGuard>
+        </securitySettings>
 
 "@
     }
