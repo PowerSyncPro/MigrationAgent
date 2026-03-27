@@ -79,7 +79,7 @@ $credentials = @{
     "Cred3" = @{ UserName = "trn.da"; Password = "uoYBP4IgZ7n8M#hU"; Domain = "PSPTarget.local" }
     "Cred4" = @{ UserName = "trn.da"; Password = "Oz#5VqCE5esrvIQ5"; Domain = "PSPSource.local" }
     "Cred5" = @{ UserName = "trn.local"; Password = "y9r3M%UHG3Ocd8Qc"; Domain = "." }
-    "Cred6" = @{ UserName = "AzureAD\"; Password = "unknown"; Domain = "AzureAD" }
+    "Cred6" = @{ UserName = "AzureAD\<replacewithUPN>"; Password = "unknown"; Domain = "AzureAD" }
 }
 $serverName = $env:COMPUTERNAME # Or use [System.Environment]::MachineName
 # Match trailing digits
