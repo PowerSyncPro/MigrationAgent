@@ -336,6 +336,26 @@ try {
 
         Update-MgUser -UserId $targetUPN -PasswordProfile $passwordProfile -ErrorAction Stop
         Write-Host "`nEntra ID password reset successful for $targetUPN" -ForegroundColor Green
+
+
+        $file = "C:\binaries\PSPEnvironment.rdg"
+
+        $oldLine = '<replacewithUPN>'          # exact match
+        $newLine = $targetUPN    # new value
+
+        $content = Get-Content $file -Raw
+
+        if ($content -match [regex]::Escape($oldLine)) {
+            $content -replace [regex]::Escape($oldLine), $newLine |
+                Set-Content $file -Force -Encoding UTF8
+
+        Write-Host "Successfully replaced UPN in RDG $file with $targetUPN, close and re-open your RDP without saving for it to reflect" -ForegroundColor Green
+        }
+            else {
+               Write-Host "Warning: Could not find the exact string '$oldLine' in the file." -ForegroundColor Yellow
+            }
+
+
     }
     catch {
         Write-Host "`nFailed to reset Entra ID password for $targetUPN : $($_.Exception.Message)" -ForegroundColor Red
