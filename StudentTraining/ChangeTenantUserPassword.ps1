@@ -50,11 +50,11 @@ $targetUpnSuffix = "@psptarget.local"
 
 # --- PSPSource.local account ---
 $sourceAdUsername = "trn.da@pspsource.local"
-$sourceAdPassword = ""
+$sourceAdPassword = "Oz#5VqCE5esrvIQ5"
 
 # --- PSPTarget.local account ---
 $targetAdUsername = "trn.da@psptarget.local"
-$targetAdPassword = ""
+$targetAdPassword = "uoYBP4IgZ7n8M#hU"
 
 # =========================================================
 # OPTIONAL PASSWORD SETTINGS
