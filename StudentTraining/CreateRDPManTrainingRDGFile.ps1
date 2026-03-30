@@ -73,6 +73,9 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 }
 
 # Define the 4 credentials (username/password/domain pairs; domain can be '.' for local)
+
+# #####################################################################################################################
+# This is a disposable student lab not exposed to internet or production, contains no data, therefore keeping accounts.
 $credentials = @{
     "Cred1" = @{ UserName = "trn.user"; Password = 'IL0veP0wer$yncPr0!'; Domain = "PSPTarget.local" }
     "Cred2" = @{ UserName = "trn.user"; Password = 'IL0veP0wer$yncPr0!'; Domain = "PSPSource.local" }
@@ -81,6 +84,9 @@ $credentials = @{
     "Cred5" = @{ UserName = "trn.local"; Password = "y9r3M%UHG3Ocd8Qc"; Domain = "." }
     "Cred6" = @{ UserName = "AzureAD\<replacewithUPN>"; Password = "unknown"; Domain = "AzureAD" }
 }
+# This is a disposable student lab not exposed to internet or production, contains no data, therefore keeping accounts.
+# #####################################################################################################################
+
 $serverName = $env:COMPUTERNAME # Or use [System.Environment]::MachineName
 # Match trailing digits
 if ($serverName -match '\d+$') {
