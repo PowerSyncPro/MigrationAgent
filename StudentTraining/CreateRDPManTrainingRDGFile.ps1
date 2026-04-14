@@ -82,7 +82,7 @@ $credentials = @{
     "Cred3" = @{ UserName = "trn.da"; Password = "uoYBP4IgZ7n8M#hU"; Domain = "PSPTarget.local" }
     "Cred4" = @{ UserName = "trn.da"; Password = "Oz#5VqCE5esrvIQ5"; Domain = "PSPSource.local" }
     "Cred5" = @{ UserName = "trn.local"; Password = "y9r3M%UHG3Ocd8Qc"; Domain = "." }
-    "Cred6" = @{ UserName = "AzureAD\<replacewithUPN>"; Password = "unknown"; Domain = "AzureAD" }
+    "Cred6" = @{ UserName = "AzureAD\replacewithUPN"; Password = "unknown"; Domain = "AzureAD" }
 }
 # This is a disposable student lab not exposed to internet or production, contains no data, therefore keeping accounts.
 # #####################################################################################################################
@@ -98,7 +98,7 @@ if ($serverName -match '\d+$') {
 $machines = @(
     @{ DisplayName = "Source DC $randomChars"; Address = "192.168.249.8"; CredKey = "Cred4" }
     @{ DisplayName = "Target DC $randomChars"; Address = "192.168.249.9"; CredKey = "Cred3" } # Shares Cred1
-    @{ DisplayName = "Remote sync agent $randomChars"; Address = "192.168.249.5"; CredKey = "Cred3" }
+    @{ DisplayName = "Remote sync agent $randomChars"; Address = "192.168.249.5"; CredKey = "Cred4" }
     @{ DisplayName = "Workstn 1 $randomChars localaccount"; Address = "192.168.249.11"; CredKey = "Cred5" }
     @{ DisplayName = "Workstn 2 $randomChars localaccount"; Address = "192.168.249.21"; CredKey = "Cred5" } # Shares Cred2
     @{ DisplayName = "Workstn 1 $randomChars trn.user (source)"; Address = "192.168.249.11"; CredKey = "Cred2" }
