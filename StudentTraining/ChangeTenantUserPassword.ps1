@@ -340,7 +340,7 @@ try {
 
         $file = "C:\binaries\PSPEnvironment.rdg"
 
-        $oldLine = '<replacewithUPN>'          # exact match
+        $oldLine = 'replacewithUPN'          # exact match
         $newLine = $targetUPN    # new value
 
         $content = Get-Content $file -Raw
