@@ -96,6 +96,8 @@ $credentials = @{
     "Cred4" = @{ UserName = "trn.da"; Password = "Oz#5VqCE5esrvIQ5"; Domain = "PSPSource.local" }
     "Cred5" = @{ UserName = "trn.local"; Password = "y9r3M%UHG3Ocd8Qc"; Domain = "." }
     "Cred6" = @{ UserName = "AzureAD\replacewithUPN"; Password = "unknown"; Domain = "AzureAD" }
+    "Cred7" = @{ UserName = "tmpuser"; Password = 'unknown'; Domain = "PSPSource.local" }
+    "Cred8" = @{ UserName = "tmpuser"; Password = 'unknown'; Domain = "PSPTarget.local" }
 }
 # This is a disposable student lab not exposed to internet or production, contains no data, therefore keeping accounts.
 # #####################################################################################################################
@@ -118,10 +120,12 @@ $machines = @(
     @{ DisplayName = "Workstn 2 $randomChars trn.user (source)"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
     @{ DisplayName = "Workstn 1 $randomChars trn.user (target)"; Address = "192.168.249.11"; CredKey = "Cred1" }
     @{ DisplayName = "Workstn 2 $randomChars trn.user (target)"; Address = "192.168.249.21"; CredKey = "Cred1" } # Shares Cred2
-    @{ DisplayName = "Workstn 1 $randomChars tmpuser (source)"; Address = "192.168.249.11"; CredKey = "Cred2" }
-    @{ DisplayName = "Workstn 2 $randomChars tmpuser (source)"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
-    @{ DisplayName = "Workstn 1 $randomChars -Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
-    @{ DisplayName = "Workstn 2 $randomChars -Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars tmpuser (source)"; Address = "192.168.249.11"; CredKey = "Cred7" }
+    @{ DisplayName = "Workstn 1 $randomChars tmpuser (target)"; Address = "192.168.249.11"; CredKey = "Cred8" }
+    @{ DisplayName = "Workstn 2 $randomChars tmpuser (source)"; Address = "192.168.249.21"; CredKey = "Cred7" } # Shares Cred2
+    @{ DisplayName = "Workstn 2 $randomChars tmpuser (target)"; Address = "192.168.249.21"; CredKey = "Cred8" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars tmpuserentra-Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
+    @{ DisplayName = "Workstn 2 $randomChars tmpuserentra-Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
 )
 # Output file path for the .rdg file (change if needed)
 $rdgFilePath = "C:\binaries\PSPEnvironment.rdg" # e.g., "C:\Temp\MyRDCMan.rdg"
