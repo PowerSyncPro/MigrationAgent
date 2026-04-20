@@ -124,8 +124,8 @@ $machines = @(
     @{ DisplayName = "Workstn 1 $randomChars tmpuser (target)"; Address = "192.168.249.11"; CredKey = "Cred8" }
     @{ DisplayName = "Workstn 2 $randomChars tmpuser (source)"; Address = "192.168.249.21"; CredKey = "Cred7" } # Shares Cred2
     @{ DisplayName = "Workstn 2 $randomChars tmpuser (target)"; Address = "192.168.249.21"; CredKey = "Cred8" } # Shares Cred2
-    @{ DisplayName = "Workstn 1 $randomChars tmpuserentra-Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
-    @{ DisplayName = "Workstn 2 $randomChars tmpuserentra-Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars tmpentrauser-Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
+    @{ DisplayName = "Workstn 2 $randomChars tmpentrauser-Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
 )
 # Output file path for the .rdg file (change if needed)
 $rdgFilePath = "C:\binaries\PSPEnvironment.rdg" # e.g., "C:\Temp\MyRDCMan.rdg"
