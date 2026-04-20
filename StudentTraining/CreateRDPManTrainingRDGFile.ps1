@@ -33,28 +33,41 @@
 # Run PowerShell as Administrator
 
 
-$base = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
-New-Item -Path $base -Force | Out-Null
+$flagFile = "C:\binaries\edge_setup_done.flag"
 
-New-ItemProperty -Path $base -Name HideFirstRunExperience -PropertyType DWord -Value 1 -Force | Out-Null
-New-ItemProperty -Path $base -Name AutoImportAtFirstRun -PropertyType DWord -Value 4 -Force | Out-Null
-New-ItemProperty -Path $base -Name DefaultBrowserSettingEnabled -PropertyType DWord -Value 0 -Force | Out-Null
-New-ItemProperty -Path $base -Name DefaultBrowserSettingsCampaignEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+# Ensure the directory exists
+New-Item -Path "C:\binaries" -ItemType Directory -Force | Out-Null
 
-New-ItemProperty -Path $base -Name RestoreOnStartup -PropertyType DWord -Value 4 -Force | Out-Null
+# Only run if the flag file does NOT exist
+if (-not (Test-Path $flagFile)) {
 
-# Startup URLs: easiest + most robust is the numbered subkey values
-$urlsKey = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs"
-New-Item -Path $urlsKey -Force | Out-Null
-New-ItemProperty -Path $urlsKey -Name "1" -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
+    $base = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+    New-Item -Path $base -Force | Out-Null
 
-New-ItemProperty -Path $base -Name ShowHomeButton -PropertyType DWord -Value 1 -Force | Out-Null
-New-ItemProperty -Path $base -Name HomepageLocation -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
-New-ItemProperty -Path $base -Name HomepageIsNewTabPage -PropertyType DWord -Value 0 -Force | Out-Null
+    New-ItemProperty -Path $base -Name HideFirstRunExperience -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -Path $base -Name AutoImportAtFirstRun -PropertyType DWord -Value 4 -Force | Out-Null
+    New-ItemProperty -Path $base -Name DefaultBrowserSettingEnabled -PropertyType DWord -Value 0 -Force | Out-Null
+    New-ItemProperty -Path $base -Name DefaultBrowserSettingsCampaignEnabled -PropertyType DWord -Value 0 -Force | Out-Null
 
-Stop-Process -Name msedge -Force -ErrorAction SilentlyContinue
+    New-ItemProperty -Path $base -Name RestoreOnStartup -PropertyType DWord -Value 4 -Force | Out-Null
 
+    # Startup URLs
+    $urlsKey = "HKLM:\SOFTWARE\Policies\Microsoft\Edge\RestoreOnStartupURLs"
+    New-Item -Path $urlsKey -Force | Out-Null
+    New-ItemProperty -Path $urlsKey -Name "1" -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
 
+    New-ItemProperty -Path $base -Name ShowHomeButton -PropertyType DWord -Value 1 -Force | Out-Null
+    New-ItemProperty -Path $base -Name HomepageLocation -PropertyType String -Value "http://localhost:5000" -Force | Out-Null
+    New-ItemProperty -Path $base -Name HomepageIsNewTabPage -PropertyType DWord -Value 0 -Force | Out-Null
+
+    Stop-Process -Name msedge -Force -ErrorAction SilentlyContinue
+
+    # Create flag file to indicate script has run
+    New-Item -Path $flagFile -ItemType File -Force | Out-Null
+}
+
+Stop-Process -Name rdcman-x86 -Force -ErrorAction SilentlyContinue
+Stop-Process -Name rdcman -Force -ErrorAction SilentlyContinue
 
 # PowerShell Script to Generate RDCMan .rdg File with Encrypted Credentials
 # This script creates a .rdg file for Remote Desktop Connection Manager (RDCMan)
@@ -105,6 +118,8 @@ $machines = @(
     @{ DisplayName = "Workstn 2 $randomChars trn.user (source)"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
     @{ DisplayName = "Workstn 1 $randomChars trn.user (target)"; Address = "192.168.249.11"; CredKey = "Cred1" }
     @{ DisplayName = "Workstn 2 $randomChars trn.user (target)"; Address = "192.168.249.21"; CredKey = "Cred1" } # Shares Cred2
+    @{ DisplayName = "Workstn 1 $randomChars tmpuser (source)"; Address = "192.168.249.11"; CredKey = "Cred2" }
+    @{ DisplayName = "Workstn 2 $randomChars tmpuser (source)"; Address = "192.168.249.21"; CredKey = "Cred2" } # Shares Cred2
     @{ DisplayName = "Workstn 1 $randomChars -Entra"; Address = "PSP-TRN-WSTN1$randomChars"; CredKey = "Cred6" }
     @{ DisplayName = "Workstn 2 $randomChars -Entra"; Address = "PSP-TRN-WSTN2$randomChars"; CredKey = "Cred6" } # Shares Cred2
 )
