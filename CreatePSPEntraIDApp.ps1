@@ -11,7 +11,7 @@
 
     The script will:
       - Verify and install the required Microsoft.Graph PowerShell module
-      - Authenticate to the target tenant using device code flow
+      - Authenticate to the target tenant via interactive browser login
       - Create the app registration with the correct API permissions
       - Grant admin consent for all application roles
       - Add the bulk enrolment (BPRT) delegated permission where required
@@ -92,11 +92,12 @@
                                   support; REST-based device code flow for all environments
                                   to bypass Azure.Identity token caching regression in
                                   Microsoft.Graph module 2.36.x.
-    Updated:    16th April 2026 - Improved error handling: initial device code request now
-                                  surfaces meaningful errors on failure; post-auth connection
-                                  validation added; Graph API calls in federation check,
+    Updated:    16th April 2026 - Improved error handling: post-auth connection validation
+                                  added; Graph API calls in federation check,
                                   Ensure-ServicePrincipalExists, and Get-GraphAppRoleMap now
                                   fail fast with clear messages instead of cascading nulls.
+    Updated:    20th April 2026 - Switched from device code flow to interactive browser
+                                  authentication; removed REST-based device code workaround.
 #>
 
 param(
@@ -402,80 +403,6 @@ function Grant-AppRoleConsent {
     }
 }
 
-# ---------------------------------------------------------------------------
-# Device Code Authentication (REST-based)
-# Microsoft.Graph module 2.36.x introduced a regression where DeviceCodeCredential
-# (Azure.Identity) fails to cache tokens, causing every Graph cmdlet to throw
-# "DeviceCodeCredential authentication failed" even after a successful login.
-# This affects Commercial and Government clouds alike.
-# We bypass Azure.Identity entirely by doing the device code flow via REST and
-# passing the resulting access token directly to Connect-MgGraph -AccessToken.
-# ---------------------------------------------------------------------------
-
-function Invoke-DeviceCodeAuth {
-    param(
-        [string]   $TenantId,
-        [string]   $CloudEnvironment,
-        [string]   $ClientId,
-        [string[]] $Scopes
-    )
-
-    $loginHost = switch ($CloudEnvironment) {
-        "GCCHigh" { "https://login.microsoftonline.us"  }
-        "DoD"     { "https://login.microsoftonline.us"  }
-        default   { "https://login.microsoftonline.com" }
-    }
-
-    $graphResource = switch ($CloudEnvironment) {
-        "GCCHigh" { "https://graph.microsoft.us"        }
-        "DoD"     { "https://dod-graph.microsoft.us"    }
-        default   { "https://graph.microsoft.com"       }
-    }
-
-    $scopeString = ($Scopes | ForEach-Object { "$graphResource/$_" }) -join " "
-
-    # Initiate device code flow
-    try {
-        $dcResponse = Invoke-RestMethod -Method POST `
-            -Uri         "$loginHost/$TenantId/oauth2/v2.0/devicecode" `
-            -Body        "client_id=$ClientId&scope=$([Uri]::EscapeDataString($scopeString))" `
-            -ContentType "application/x-www-form-urlencoded"
-    } catch {
-        $errBody = $null
-        try { $errBody = ($_.ErrorDetails.Message | ConvertFrom-Json) } catch {}
-        if ($errBody -and $errBody.error_description) {
-            throw "Authentication request failed: $($errBody.error_description)"
-        }
-        throw "Authentication request failed: $($_.Exception.Message)"
-    }
-
-    Write-Host $dcResponse.message
-    Write-Host ""
-
-    # Poll until the user completes auth or the code expires
-    $expires  = (Get-Date).AddSeconds([int]$dcResponse.expires_in)
-    $interval = [int]$dcResponse.interval
-
-    while ((Get-Date) -lt $expires) {
-        Start-Sleep -Seconds $interval
-        try {
-            $tokenResponse = Invoke-RestMethod -Method POST `
-                -Uri         "$loginHost/$TenantId/oauth2/v2.0/token" `
-                -Body        "client_id=$ClientId&device_code=$($dcResponse.device_code)&grant_type=urn:ietf:params:oauth:grant-type:device_code" `
-                -ContentType "application/x-www-form-urlencoded"
-            return $tokenResponse
-        } catch {
-            $errBody = $null
-            try { $errBody = ($_.ErrorDetails.Message | ConvertFrom-Json) } catch {}
-            $errCode = if ($errBody) { $errBody.error } else { "" }
-            if ($errCode -eq "authorization_pending") { continue }
-            if ($errCode -eq "slow_down")             { $interval += 5; continue }
-            throw
-        }
-    }
-
-    throw "Authentication timed out. Please re-run the script."
-}
 
 # ---------------------------------------------------------------------------
 # Interactive Interview
@@ -658,16 +585,12 @@ if (-not $currentContext) {
     }
 
     Info "Connecting to tenant '$TenantID' ($CloudEnvironment)..."
-    Info "A device login prompt will appear below. Complete authentication in your browser."
+    Info "A browser window will open for authentication. Sign in with a Global Administrator account."
     Write-Host ""
 
-    $token       = Invoke-DeviceCodeAuth `
-                       -TenantId         $TenantID `
-                       -CloudEnvironment $CloudEnvironment `
-                       -ClientId         $graphCliClientId `
-                       -Scopes           $requiredScopes
-    $secureToken = ConvertTo-SecureString $token.access_token -AsPlainText -Force
-    Connect-MgGraph -AccessToken $secureToken `
+    Connect-MgGraph -ClientId    $graphCliClientId `
+                    -TenantId    $TenantID `
+                    -Scopes      $requiredScopes `
                     -Environment $mgEnvironment `
                     -NoWelcome
 }
