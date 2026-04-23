@@ -98,6 +98,7 @@
                                   fail fast with clear messages instead of cascading nulls.
     Updated:    20th April 2026 - Switched from device code flow to interactive browser
                                   authentication; removed REST-based device code workaround.
+    Updated:    23rd April 2026 - Added Device.Read.All to DirSyncHP permission profile.
 #>
 
 param(
@@ -242,6 +243,7 @@ $permissionSets = @{
         Description      = "Read/write permissions for directory sync"
         GraphPermissions = @(
             "Domain.Read.All",
+            "Device.Read.All",
             "Group.Create",
             "Group.ReadWrite.All",
             "GroupMember.ReadWrite.All",
