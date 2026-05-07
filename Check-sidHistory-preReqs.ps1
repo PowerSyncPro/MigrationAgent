@@ -4,65 +4,11 @@
 
 .NOTES
     Disclaimer:     This script is provided 'AS IS'. No warranty is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: v2.10
-    Date:  24 March 2026
+    Version: v2.11
+    Date:  4 May 2026
 
 Overview:
     This version enhances reliability, evidence collection, and operational clarity for sidHistory migration prerequisite validation using PowerSyncPro.
-
-Key Improvements in v2.10:
-
-Added NTLM check for source PDCe
-
-Active RPC high port test using rpcping
-
-Robust Audit Policy Detection
-- Handles both CSV and plain-text auditpol output formats.
-- Fully compatible with Windows PowerShell 5.1.
-- Eliminates false "Unable to retrieve policy" results on some Windows builds.
-
-Evidence Pack Generation
-Script now automatically creates an "Evidence" folder and exports:
-
-Audit Policy Snapshot (CSV)
-   - Full advanced audit configuration at time of test.
-   - Includes computer name and timestamp.
-   - TXT fallback if CSV parsing unavailable.
-
-Environment Snapshot (CSV)
-   Captures:
-   - Domain & forest information
-   - FSMO role holders
-   - DC identity
-   - Last boot time
-   - TcpipClientSupport registry state
-   - Useful for change control and migration documentation
-
-Network Prereq Awareness
-- Connectivity tests include:
-  - TCP 135 (RPC Endpoint Mapper)
-  - TCP 445 (SMB)
-- Adds guidance on dynamic RPC high ports (49152–65535) to prevent firewall-related migration failures.
-
-Safer TcpipClientSupport Logic
-- Now warns instead of failing when reboot timing is uncertain.
-- Prevents false negatives.
-
-Improved Service Account Validation
-- Better DOMAIN\user resolution
-- Correct ACL permission logic evaluation
-- SAM/UPN consistency check added
-
-Consultant-Grade Output
-- Summary table includes Evidence export status.
-- Script remains fully read-only and safe for production DCs.
-
-Compatibility:
-- Windows PowerShell 5.1+
-- Domain Controllers (Source & Target)
-- PSP Server / Remote Agent hosts
-
-This version is production-ready and intended for customer-facing prereq validation.
 
 .SYNOPSIS
     Retrieves and displays the current state of advanced audit policy settings for sidHistory migration prerequisites.
@@ -70,6 +16,25 @@ This version is production-ready and intended for customer-facing prereq validat
 .RELEASE NOTES
 
 #>
+
+# ----------------------
+# PowerShell Version Check
+# ----------------------
+# This must be the first executable code in the script. It uses only syntax
+# that is compatible with PowerShell 2.0 and later so that the check itself
+# is guaranteed to run on any host that can parse the script header.
+if ($PSVersionTable.PSVersion -lt [Version]"4.0") {
+    Write-Host ""
+    Write-Host "ERROR: This script requires Windows PowerShell 4.0 or later." -ForegroundColor Red
+    Write-Host ("       Detected PowerShell version: {0}" -f $PSVersionTable.PSVersion) -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Please upgrade Windows PowerShell to 4.0 or later before re-running this script." -ForegroundColor Yellow
+    Write-Host "Windows Management Framework 5.1 (which includes Windows PowerShell 5.1, and" -ForegroundColor Yellow
+    Write-Host "satisfies the 4.0 minimum) is available from Microsoft:" -ForegroundColor Yellow
+    Write-Host "  https://www.microsoft.com/download/details.aspx?id=54616" -ForegroundColor Cyan
+    Write-Host ""
+    exit 1
+}
 
 # ----------------------
 # Banner
@@ -87,8 +52,6 @@ Write-Host $asciiLogo -ForegroundColor Yellow
 Write-Host "This script only reads current configuration to identify that the prerequisites for sidHistory migration have been met." -ForegroundColor Cyan
 Write-Host "This script does not make any changes to the environment." -ForegroundColor Cyan
 Write-Host ""
-
-Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 
 # ----------------------
 # Evidence Pack helpers
@@ -199,18 +162,44 @@ function Export-AuditPolicySnapshot {
     }
 }
 
+# ----------------------
+# Optional evidence export prompt
+# ----------------------
+function Save-EvidenceIfRequested {
+    param(
+        [Parameter(Mandatory=$true)][string]$Context,         # filename token: SourcePDCe / TargetPDCe / PSP
+        [Parameter(Mandatory=$true)][string]$ContextDisplay,  # label used inside Export-EnvironmentSnapshot
+        [bool]$IncludeAuditSnapshot = $false
+    )
+
+    $resp = Read-Host "Save test results to log files? Results will be saved to a 'sidHistoryEvidence' folder in the script directory. (Y/N, default: N)"
+    if ($resp -notmatch '^(?i)y(es)?$') {
+        Write-Host "Test results were not saved." -ForegroundColor Yellow
+        return
+    }
+
+    $evidenceDir = Get-EvidenceDir
+    $stamp       = Get-Date -Format "yyyyMMdd_HHmmss"
+
+    if ($IncludeAuditSnapshot) {
+        $auditCsvPath = Join-Path $evidenceDir ("AuditPolicySnapshot_{0}_{1}_{2}.csv" -f $Context, $env:COMPUTERNAME, $stamp)
+        Export-AuditPolicySnapshot -Path $auditCsvPath | Out-Null
+    }
+
+    $envCsvPath = Join-Path $evidenceDir ("EnvironmentSnapshot_{0}_{1}_{2}.csv" -f $Context, $env:COMPUTERNAME, $stamp)
+    Export-EnvironmentSnapshot -Path $envCsvPath -Context $ContextDisplay | Out-Null
+}
+
 function Show-RpcDynamicPortGuidance {
     param(
         [Parameter(Mandatory=$true)][string]$TargetFqdn
     )
 
-    Write-Host ""
     Write-Host "RPC Dynamic Port Guidance (Informational)" -ForegroundColor Yellow
     Write-Host "----------------------------------------" -ForegroundColor Yellow
     Write-Host "You tested TCP 135 (RPC Endpoint Mapper). Many RPC operations also require dynamic high ports." -ForegroundColor Yellow
     Write-Host "Typical Windows dynamic RPC range is TCP 49152-65535 (unless restricted by policy)." -ForegroundColor Yellow
     Write-Host "If firewalls exist between PSP and $TargetFqdn, ensure this range (or your restricted range) is allowed." -ForegroundColor Yellow
-    Write-Host ""
 }
 
 # ----------------------
@@ -452,7 +441,6 @@ function Test-RpcHighPortConnectivity {
         [int]$ProgressSeconds = 30
     )
 
-    Write-Host ""
     Write-Host "RPC High Port Test (Dynamic RPC / TCP 49152-65535)" -ForegroundColor Cyan
     Write-Host ("-" * 52) -ForegroundColor Cyan
 
@@ -468,8 +456,7 @@ function Test-RpcHighPortConnectivity {
     Write-Host "rpcping.exe found: $($rpcpingCmd.Source)" -ForegroundColor Cyan
     Write-Host "Running 3 successive rpcping tests to $SourceFqdn ..." -ForegroundColor Cyan
     Write-Host "Each test contacts the RPC Endpoint Mapper (TCP 135) and connects via a dynamically" -ForegroundColor Cyan
-    Write-Host "allocated high port — the same path used by sidHistory migration." -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host "allocated high port - the same path used by sidHistory migration." -ForegroundColor Cyan
 
     $rpcpingSource = $rpcpingCmd.Source
     $allPassed     = $true
@@ -515,15 +502,13 @@ function Test-RpcHighPortConnectivity {
         else {
             $passed = ($result.ExitCode -eq 0) -or ($result.Output -imatch "Completed\s+\d+\s+call")
             if ($passed) {
-                Write-Host ("  Run {0} : PASSED  — {1}" -f $run, $result.Output) -ForegroundColor Green
+                Write-Host ("  Run {0} : PASSED  - {1}" -f $run, $result.Output) -ForegroundColor Green
             }
             else {
-                Write-Host ("  Run {0} : FAILED  — {1}" -f $run, $result.Output) -ForegroundColor Red
+                Write-Host ("  Run {0} : FAILED  - {1}" -f $run, $result.Output) -ForegroundColor Red
                 $allPassed = $false
             }
         }
-
-        Write-Host ""
     }
 
     if ($allPassed) {
@@ -620,10 +605,24 @@ function Get-SourceAccountPermissions {
 
         $sid = $user.SID.Value
 
+        # Look up well-known privileged groups by SID rather than name. Group
+        # sAMAccountNames may be localized in non-English domains, so name-based
+        # lookups can fail. Well-known SIDs are language-independent.
+        #   RID 512 = Domain Admins
+        #   RID 519 = Enterprise Admins (forest root domain only)
+        #   S-1-5-32-544 = BUILTIN\Administrators (fixed, not domain-scoped)
+        $domainObj = Get-ADDomain -Server $server -ErrorAction Stop
+        $domainSid = $domainObj.DomainSID.Value
+        $wellKnownGroupSids = @(
+            "$domainSid-512",
+            "$domainSid-519",
+            "S-1-5-32-544"
+        )
+
         $isAdmin = $false
-        foreach ($groupName in @("Domain Admins", "Enterprise Admins", "Administrators")) {
+        foreach ($groupSid in $wellKnownGroupSids) {
             try {
-                $members = Get-ADGroupMember -Identity $groupName -Server $server -Recursive |
+                $members = Get-ADGroupMember -Identity $groupSid -Server $server -Recursive -ErrorAction Stop |
                     Select-Object -ExpandProperty SID | Select-Object -ExpandProperty Value
                 if ($members -contains $sid) { $isAdmin = $true; break }
             }
@@ -719,12 +718,23 @@ function Get-TargetAccountPermissions {
 
         $allSids = @($sid) + $groupSids
 
-        # Check membership in required groups in *current* target domain (where script is run)
-        $targetServer = (Get-ADDomain).DNSRoot
+        # Check membership in required groups in *current* target domain (where script is run).
+        # Look up by well-known SID rather than name, since group sAMAccountNames may be
+        # localized in non-English domains.
+        #   RID 512 = Domain Admins
+        #   RID 519 = Enterprise Admins (forest root domain only)
+        $targetDomain    = Get-ADDomain
+        $targetServer    = $targetDomain.DNSRoot
+        $targetDomainSid = $targetDomain.DomainSID.Value
+        $wellKnownGroupSids = @(
+            "$targetDomainSid-512",
+            "$targetDomainSid-519"
+        )
+
         $isAdmin = $false
-        foreach ($groupName in @("Domain Admins", "Enterprise Admins")) {
+        foreach ($groupSid in $wellKnownGroupSids) {
             try {
-                $members = Get-ADGroupMember -Identity $groupName -Server $targetServer -Recursive |
+                $members = Get-ADGroupMember -Identity $groupSid -Server $targetServer -Recursive -ErrorAction Stop |
                     Select-Object -ExpandProperty SID | Select-Object -ExpandProperty Value
                 if ($members -contains $sid) { $isAdmin = $true; break }
             }
@@ -782,77 +792,6 @@ function Get-TargetAccountPermissions {
         Write-Host "Service Account SAM/UPN test: FAILED" -ForegroundColor Red
         Write-Host "Error checking account permissions: $($_.Exception.Message)" -ForegroundColor Red
         return @{ Permissions = "Failed"; SamUpn = "Failed" }
-    }
-}
-
-# ----------------------
-# LM Compatibility Level check (Source PDCe only)
-# ----------------------
-function Get-LmCompatibilityLevel {
-    Write-Host ""
-    Write-Host "LM Compatibility Level (NTLM Authentication) Check" -ForegroundColor Cyan
-    Write-Host ("-" * 52) -ForegroundColor Cyan
-    Write-Host "This check verifies that the source PDC Emulator is not configured" -ForegroundColor Cyan
-    Write-Host "to refuse NTLM authentication (level 5), which would block the" -ForegroundColor Cyan
-    Write-Host "DsAddSidHistory RPC call from the target PDC Emulator." -ForegroundColor Cyan
-    Write-Host ""
-
-    $regPath  = "HKLM:\System\CurrentControlSet\Control\Lsa"
-    $regValue = "LmCompatibilityLevel"
-
-    try {
-        $prop  = Get-ItemProperty -Path $regPath -Name $regValue -ErrorAction Stop
-        $level = $prop.$regValue
-    }
-    catch {
-        # Key absent — OS default applies (level 3 on Server 2008 R2 and later)
-        Write-Host "LmCompatibilityLevel registry value is not present." -ForegroundColor Yellow
-        Write-Host "OS default applies (level 3 = NTLMv2 only on Server 2008 R2+)." -ForegroundColor Yellow
-        Write-Host "LM Compatibility Level Check: PASSED (OS default is safe)" -ForegroundColor Green
-        Write-Host ""
-        return $true
-    }
-
-    $description = switch ($level) {
-        0 { "Send LM & NTLM responses" }
-        1 { "Send LM & NTLM — use NTLMv2 session security if negotiated" }
-        2 { "Send NTLMv2 response only" }
-        3 { "Send NTLMv2 response only (client-side enforcement)" }
-        4 { "Send NTLMv2 only; DC refuses LM" }
-        5 { "Send NTLMv2 only; DC refuses LM and NTLMv1 (most restrictive)" }
-        default { "Unknown level ($level)" }
-    }
-
-    Write-Host "LmCompatibilityLevel : $level" -ForegroundColor Cyan
-    Write-Host "Description          : $description" -ForegroundColor Cyan
-    Write-Host ""
-
-    if ($level -eq 5) {
-        Write-Host "LM Compatibility Level Check: FAILED" -ForegroundColor Red
-        Write-Host "Level 5 means this DC refuses NTLMv1. The DsAddSidHistory RPC call" -ForegroundColor Red
-        Write-Host "initiated by the target PDC Emulator authenticates to this source PDC" -ForegroundColor Red
-        Write-Host "Emulator over TCP — if NTLM negotiation falls back to NTLMv1, this DC" -ForegroundColor Red
-        Write-Host "will reject it and the sidHistory migration will fail." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Recommended action: Confirm the target PDC Emulator and PSP server are" -ForegroundColor Yellow
-        Write-Host "enforcing NTLMv2 outbound (LmCompatibilityLevel >= 3). If they are," -ForegroundColor Yellow
-        Write-Host "level 5 on this source DC may be acceptable. If unsure, consider" -ForegroundColor Yellow
-        Write-Host "temporarily lowering to level 3 during the migration window." -ForegroundColor Yellow
-        Write-Host ""
-        return $false
-    }
-    elseif ($level -le 2) {
-        Write-Host "LM Compatibility Level Check: PASSED (with advisory)" -ForegroundColor Yellow
-        Write-Host "Level $level permits LM/NTLMv1 — migration will succeed, but NTLM" -ForegroundColor Yellow
-        Write-Host "hardening is below recommended baseline. Consider raising to level 3" -ForegroundColor Yellow
-        Write-Host "or higher after the migration window." -ForegroundColor Yellow
-        Write-Host ""
-        return $true
-    }
-    else {
-        Write-Host "LM Compatibility Level Check: PASSED" -ForegroundColor Green
-        Write-Host ""
-        return $true
     }
 }
 
@@ -962,15 +901,11 @@ function Get-ADAuditPolicies {
 
     Write-Host "Audit Policy Configuration Status" -ForegroundColor Green
     Write-Host ("=" * 60) -ForegroundColor Green
-    Write-Host ""
-
     Write-Host "Default Domain Controllers Policy | Computer Configuration | Policies | Windows Settings | Security Settings | Advanced Audit Policy Configuration | Audit Policies" -ForegroundColor Yellow
     Write-Host ("-" * 60) -ForegroundColor Yellow
-    Write-Host ""
 
     foreach ($group in $advancedSubcategories.Keys) {
         Write-Host $group -ForegroundColor Yellow
-        Write-Host ""
 
         foreach ($subcat in $advancedSubcategories[$group]) {
             $policy = Get-AuditPolicy -Name $subcat
@@ -1004,17 +939,12 @@ function Get-ADAuditPolicies {
                         Write-Host "$failureText (Desired: $($desired.Failure))" -ForegroundColor Red
                     }
                 }
-
-                Write-Host ""
             } else {
                 Write-Host "Audit $subcat" -ForegroundColor Cyan
                 Write-Host "Unable to retrieve policy" -ForegroundColor Red
-                Write-Host ""
                 $allPassed = $false
             }
         }
-
-        Write-Host ""
     }
 
     Write-Host ("=" * 60) -ForegroundColor Green
@@ -1061,9 +991,9 @@ do {
     Write-Host "Please select the location from which you are running this sidHistory prereq check script." -ForegroundColor Cyan
     Write-Host "NOTE: This script must be ran from all 3 locations listed below to complete the PreReq check." -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "1.) This script is being ran on the SOURCE PDC Emulator"
+    Write-Host "1.) This script is being ran on the PSP Server or Target Remote Agent (PSP Connectivity & Network Prereq Test)"
     Write-Host "2.) This script is being ran on the TARGET PDC Emulator"
-    Write-Host "3.) This script is being ran on the PSP Server or Target Remote Agent (PSP Connectivity & Network Prereq Test"
+    Write-Host "3.) This script is being ran on the SOURCE PDC Emulator"
     Write-Host "4.) Exit"
     Write-Host ""
     $choice = Read-Host "Enter your choice (1-4)"
@@ -1071,42 +1001,32 @@ do {
     switch ($choice) {
 
         "1" {
-            Write-Host "Source PDCe tests" -ForegroundColor Green
+            Write-Host "PSP Server or Remote Agent tests" -ForegroundColor Green
             Write-Host ("=" * 60) -ForegroundColor Green
 
-            $pdcPassed          = Get-PDCeRole
-            $groupPassed        = Get-SourceGroupCheck
-            $tcpipPassed        = Get-TcpipClientSupport
-            $lmCompatPassed     = Get-LmCompatibilityLevel
-            $accountPermissions = Get-SourceAccountPermissions
-            $auditPassed        = Get-ADAuditPolicies
+            $fqdn = Read-Host "Enter the FQDN of the Target PDCe Server:"
+            $profile = Test-AdConnectivityProfile -TargetFqdn $fqdn
 
-            # Evidence exports
-            $evidenceDir = Get-EvidenceDir
-            $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $auditCsvPath = Join-Path $evidenceDir ("AuditPolicySnapshot_SourcePDCe_{0}_{1}.csv" -f $env:COMPUTERNAME, $stamp)
-            $envCsvPath   = Join-Path $evidenceDir ("EnvironmentSnapshot_SourcePDCe_{0}_{1}.csv" -f $env:COMPUTERNAME, $stamp)
-
-            $auditExportOk = Export-AuditPolicySnapshot -Path $auditCsvPath
-            $envExportOk   = Export-EnvironmentSnapshot -Path $envCsvPath -Context "Source PDCe"
+            $rpcHighPassed = Test-RpcHighPortConnectivity -SourceFqdn $fqdn
 
             $summaryResults = [ordered]@{
-                "Group Check"                  = $groupPassed
-                "Account Permissions"          = $accountPermissions
-                "Audit Policy Test"            = $auditPassed
-                "PDCe Test"                    = $pdcPassed
-                "TcpipClientSupport Test"      = $tcpipPassed
-                "LM Compatibility Level Test"  = $lmCompatPassed
-                "Audit Snapshot Export"        = $(if ($auditExportOk) { "Passed" } else { "Failed" })
-                "Env Snapshot Export"          = $(if ($envExportOk)   { "Passed" } else { "Failed" })
+                "DNS Test"                     = $profile.DnsPassed
+                "Kerberos Test (TCP 88)"        = $profile.Kerberos88
+                "LDAP Test (TCP 389)"           = $profile.Ldap389
+                "LDAPS Test (TCP 636)"          = $profile.Ldaps636
+                "RPC Endpoint Test (TCP 135)"   = $profile.Rpc135
+                "SMB Test (TCP 445)"            = $profile.Smb445
+                "RPC High Port Test"            = $rpcHighPassed
             }
 
             Display-Summary -results $summaryResults
+            Save-EvidenceIfRequested -Context "PSP" -ContextDisplay "PSP Server/Remote Agent"
         }
 
         "2" {
             Write-Host "Target PDCe tests" -ForegroundColor Green
             Write-Host ("=" * 60) -ForegroundColor Green
+            Import-Module ActiveDirectory -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
 
             $pdcPassed    = Get-PDCeRole
             $sourceFqdn   = Read-Host "Enter the FQDN of the SOURCE PDC Emulator"
@@ -1121,17 +1041,7 @@ do {
             $samUpn             = $accountResults.SamUpn
 
             Write-Host ("=" * 60) -ForegroundColor Green
-            Write-Host ""
             $auditPassed = Get-ADAuditPolicies
-
-            # Evidence exports
-            $evidenceDir = Get-EvidenceDir
-            $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-            $auditCsvPath = Join-Path $evidenceDir ("AuditPolicySnapshot_TargetPDCe_{0}_{1}.csv" -f $env:COMPUTERNAME, $stamp)
-            $envCsvPath   = Join-Path $evidenceDir ("EnvironmentSnapshot_TargetPDCe_{0}_{1}.csv" -f $env:COMPUTERNAME, $stamp)
-
-            $auditExportOk = Export-AuditPolicySnapshot -Path $auditCsvPath
-            $envExportOk   = Export-EnvironmentSnapshot -Path $envCsvPath -Context "Target PDCe"
 
             $summaryResults = [ordered]@{
                 "PDCe Test"                    = $pdcPassed
@@ -1141,39 +1051,34 @@ do {
                 "Account Permissions"           = $accountPermissions
                 "Service Account SAM/UPN test"  = $samUpn
                 "Audit Policy Test"             = $auditPassed
-                "Audit Snapshot Export"         = $(if ($auditExportOk) { "Passed" } else { "Failed" })
-                "Env Snapshot Export"           = $(if ($envExportOk)   { "Passed" } else { "Failed" })
             }
 
             Display-Summary -results $summaryResults
+            Save-EvidenceIfRequested -Context "TargetPDCe" -ContextDisplay "Target PDCe" -IncludeAuditSnapshot:$true
         }
 
-    "3" {
-        Write-Host "PSP Server or Remote Agent tests" -ForegroundColor Green
-        Write-Host ("=" * 60) -ForegroundColor Green
+        "3" {
+            Write-Host "Source PDCe tests" -ForegroundColor Green
+            Write-Host ("=" * 60) -ForegroundColor Green
+            Import-Module ActiveDirectory -ErrorAction SilentlyContinue -WarningAction SilentlyContinue
 
-        $fqdn = Read-Host "Enter the FQDN of the Target PDCe Server:"
-        $profile = Test-AdConnectivityProfile -TargetFqdn $fqdn
+            $pdcPassed          = Get-PDCeRole
+            $groupPassed        = Get-SourceGroupCheck
+            $tcpipPassed        = Get-TcpipClientSupport
+            $accountPermissions = Get-SourceAccountPermissions
+            $auditPassed        = Get-ADAuditPolicies
 
-        # Evidence export
-        $evidenceDir = Get-EvidenceDir
-        $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $envCsvPath = Join-Path $evidenceDir ("EnvironmentSnapshot_PSP_{0}_{1}.csv" -f $env:COMPUTERNAME, $stamp)
-        $envExportOk = Export-EnvironmentSnapshot -Path $envCsvPath -Context "PSP Server/Remote Agent"
+            $summaryResults = [ordered]@{
+                "Group Check"                  = $groupPassed
+                "Account Permissions"          = $accountPermissions
+                "Audit Policy Test"            = $auditPassed
+                "PDCe Test"                    = $pdcPassed
+                "TcpipClientSupport Test"      = $tcpipPassed
+            }
 
-        $summaryResults = [ordered]@{
-            "DNS Test"                     = $profile.DnsPassed
-            "Kerberos Test (TCP 88)"        = $profile.Kerberos88
-            "LDAP Test (TCP 389)"           = $profile.Ldap389
-            "LDAPS Test (TCP 636)"          = $profile.Ldaps636
-            "RPC Endpoint Test (TCP 135)"   = $profile.Rpc135
-            "SMB Test (TCP 445)"            = $profile.Smb445
-            "Env Snapshot Export"           = $(if ($envExportOk) { "Passed" } else { "Failed" })
+            Display-Summary -results $summaryResults
+            Save-EvidenceIfRequested -Context "SourcePDCe" -ContextDisplay "Source PDCe" -IncludeAuditSnapshot:$true
         }
-
-        Display-Summary -results $summaryResults
-    }
-
 
         "4" {
             Write-Host "Exiting script." -ForegroundColor Cyan
