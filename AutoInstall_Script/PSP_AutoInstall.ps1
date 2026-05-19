@@ -6,12 +6,13 @@
 .NOTES
     Date            February/2026
     Disclaimer:     This script is community driven and provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 0.3
+    Version: 0.4
     Updated : 9th January, 2026 - Added logic to handle installing with existing SQL instances on system, SQL Express 2025, fixed a bug where VC++ install would cause script failure. JRR
     Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
     Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only. - JRR
     Updated : 23rd February, 2026 - Fixed issues in completion only mode with SQL selection. - JRR
     Updated : 10th March, 2026 - Added -KestrelHttpPort / -KestrelHttpsPort flags for custom Kestrel ports. - JRR
+    Updated : 18th May, 2026 - URL Rewrite MSI now selected based on OS UI locale so non-English IIS installations receive the correct localized package; falls back to en-US for unsupported locales. Removed /ENU=True from SQL Express install args - SSEI bootstrapper already downloads locale-correct media and this flag caused silent install failure on non-English servers. - JRR
     Copyright (c) 2026 Declaration Software
 #>
 
@@ -67,8 +68,8 @@ $SQLBootstrapperUrl = "https://download.microsoft.com/download/7ab8f535-7eb8-4b1
 # SQL Suite Management Studio
 $SsmsUrl = "https://aka.ms/ssmsfullsetup"
 
-# IIS URL Rewrite
-$RewriteUrl = "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592/rewrite_amd64_en-US.msi"
+# IIS URL Rewrite - base download path; locale-specific MSI is selected at install time
+$RewriteUrlBase = "https://download.microsoft.com/download/1/2/8/128E2E22-C1B9-44A4-BE2A-5859ED1D4592"
 # IIS Advanced Request Routing URL
 $ArrUrl = "https://download.microsoft.com/download/e/9/8/e9849d6a-020e-47e4-9fd0-a023e99b54eb/requestRouter_amd64.msi"
 
@@ -402,7 +403,6 @@ function Install-SQLExpress {
 
     # Build installer arguments
     $SqlArgs = @(
-        "/ENU=True",
         "/ROLE=AllFeatures_WithDefaults",
         "/ACTION=Install",
         "/FEATURES=SQLENGINE,REPLICATION",
@@ -591,12 +591,33 @@ function Test-IISFeatures {
 }
 function Install-URLRewrite {
   param(
-    [string]$RewriteUrl,
+    [string]$RewriteUrlBase,
     [string]$tempDir
   )
   # -----------------------
   # Install URL Rewrite
   # -----------------------
+
+  # Select the localized MSI that matches the OS UI language so it integrates
+  # correctly with a non-English IIS installation.
+  $knownLocales = @('en-US','fr-FR','de-DE','ja-JP','zh-CN','zh-TW','ko-KR','es-ES','pt-BR','it-IT','ru-RU','cs-CZ','pl-PL','tr-TR','hu-HU')
+  $osLocale = (Get-UICulture).Name
+
+  if ($knownLocales -contains $osLocale) {
+      $rewriteLocale = $osLocale
+  } else {
+      $langCode = $osLocale.Split('-')[0]
+      $match = $knownLocales | Where-Object { $_.StartsWith("$langCode-") } | Select-Object -First 1
+      if ($match) {
+          $rewriteLocale = $match
+          Warn "URL Rewrite: no exact match for '$osLocale', using '$rewriteLocale'."
+      } else {
+          $rewriteLocale = 'en-US'
+          Warn "URL Rewrite: no localized package found for '$osLocale', falling back to en-US."
+      }
+  }
+
+  $RewriteUrl = "$RewriteUrlBase/rewrite_amd64_$rewriteLocale.msi"
 
   Info "Installing IIS URL Rewrite Functionality..."
   $DownloadDir = "$tempDir\URLRewrite"
@@ -604,9 +625,9 @@ function Install-URLRewrite {
   # Ensure download directory exists
   if (-not (Test-Path $DownloadDir)) { New-Item -ItemType Directory -Path $DownloadDir | Out-Null }
 
-  $installer = Join-Path $DownloadDir "rewrite_amd64_en-US.msi"
+  $installer = Join-Path $DownloadDir "rewrite_amd64_$rewriteLocale.msi"
 
-  Info "Downloading IIS URL Rewrite MSI from $RewriteUrl ..."
+  Info "Downloading IIS URL Rewrite MSI ($rewriteLocale) from $RewriteUrl ..."
   $ProgressPreference = 'SilentlyContinue'
   Invoke-WebRequest -Uri $RewriteUrl -OutFile $installer
 
@@ -3467,7 +3488,7 @@ try{
         # Install IIS Dependencies
         # Install IIS URL Rewrite
         if(-not (Test-IISUrlRewrite)){
-        Install-URLRewrite -RewriteUrl $RewriteUrl -tempDir $tempDir
+        Install-URLRewrite -RewriteUrlBase $RewriteUrlBase -tempDir $tempDir
         }
 
         # Install and Activate IIS ARR (Advanced Request Routing)
