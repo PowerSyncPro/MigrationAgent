@@ -6,13 +6,15 @@
 .NOTES
     Date            February/2026
     Disclaimer:     This script is community driven and provided 'AS IS'. No warrantee is provided either expressed or implied. Declaration Software Ltd cannot be held responsible for any misuse of the script.
-    Version: 0.4
+    Version: 0.5
     Updated : 9th January, 2026 - Added logic to handle installing with existing SQL instances on system, SQL Express 2025, fixed a bug where VC++ install would cause script failure. JRR
     Updated : 20th January, 2026 - Added logic to split the script in half and allow for PreReqOnly and Completion only modes.
     Updated : 3rd February, 2026 - Added logic to handle a headless flag.  Internal use only. - JRR
     Updated : 23rd February, 2026 - Fixed issues in completion only mode with SQL selection. - JRR
     Updated : 10th March, 2026 - Added -KestrelHttpPort / -KestrelHttpsPort flags for custom Kestrel ports. - JRR
     Updated : 18th May, 2026 - URL Rewrite MSI now selected based on OS UI locale so non-English IIS installations receive the correct localized package; falls back to en-US for unsupported locales. Removed /ENU=True from SQL Express install args - SSEI bootstrapper already downloads locale-correct media and this flag caused silent install failure on non-English servers. - JRR
+    Updated : 26th May, 2026 - Server Core / remote PS session support: SQL installer now runs via SYSTEM scheduled task to avoid DPAPI double-hop failure; -Verb RunAs and /QS suppressed in non-interactive sessions; SQL update check disabled during install to prevent SEARCHUPDATES access denied error; SSMS skipped on headless servers; completion message updated for remote context; Import-Module WebAdministration errors suppressed from transcript in pre-install checks; non-interactive session detected and reported at startup. - JRR
+    Updated : 1st July, 2026 - Fixed silent SSMS install: aka.ms/ssmsfullsetup now serves the SSMS 21+ Visual Studio bootstrapper (vs_ssms.exe), which ignored the old slash switches. Install-SSMS now detects the installer type by OriginalFilename and uses the correct flags (--quiet --norestart --wait for the bootstrapper, /install /quiet /norestart /log for the old standalone), confirms success by locating ssms.exe (new ...Studio nn\Release\Common7\IDE layout) rather than the unreliable bootstrapper exit code, and Test-SSMS now falls back to a filesystem check so the VS-based install is not reinstalled on every run. - JRR
     Copyright (c) 2026 Declaration Software
 #>
 
@@ -51,7 +53,7 @@ param (
 Set-StrictMode -Version Latest
 
 # General Variables
-$scriptVer = "v0.2"
+$scriptVer = "v0.5"
 
 $tempDir = "C:\Temp" # Temporary Directory for Downloads, etc.
 $LogPath = "C:\Temp\PSP_AutoInstall.txt" # Logging Location
@@ -383,8 +385,16 @@ function Install-SQLExpress {
 
     # Download full install media
     Info "Fetching installation media..."
-    $bootstrapperCmd = "`"$bootstrapperExe`" /ACTION=Download /MEDIAPATH=`"$MediaDir`" /QUIET"
-    Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile","-Command",$bootstrapperCmd -Verb RunAs -Wait
+    # -Verb RunAs (ShellExecute) is used in interactive desktop sessions so the download
+    # progress window is visible to the user. In remote PS sessions and Server Core the
+    # window station is non-interactive, causing ShellExecute to fail silently, so we
+    # invoke the bootstrapper directly instead (the script is already running as admin).
+    if ([Environment]::UserInteractive) {
+        $bootstrapperCmd = "`"$bootstrapperExe`" /ACTION=Download /MEDIAPATH=`"$MediaDir`" /QUIET"
+        Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile","-Command",$bootstrapperCmd -Verb RunAs -Wait
+    } else {
+        Start-Process -FilePath $bootstrapperExe -ArgumentList "/ACTION=Download","/MEDIAPATH=`"$MediaDir`"","/QUIET" -Wait
+    }
 
     # Locate setup executable
     $setupExe = Get-ChildItem -Path $MediaDir -Recurse -Filter "SQLEXPR*.exe" | Select-Object -First 1
@@ -402,21 +412,54 @@ function Install-SQLExpress {
     Info ("Installing SQL Server Express with sysadmin accounts: {0}" -f $sysAdminsArg)
 
     # Build installer arguments
+    # /QS shows a simple progress UI in interactive desktop sessions; /Q is fully silent
+    # and required for remote PS sessions / Server Core where there is no window station.
+    $quietFlag = if ([Environment]::UserInteractive) { "/QS" } else { "/Q" }
+
     $SqlArgs = @(
         "/ROLE=AllFeatures_WithDefaults",
         "/ACTION=Install",
         "/FEATURES=SQLENGINE,REPLICATION",
-        "/USEMICROSOFTUPDATE=True",
-        "/UpdateSource=MU",
+        # Disable update search during install. The SEARCHUPDATES workflow calls the
+        # Windows Update COM interface which is inaccessible in remote PS sessions and
+        # causes an Access Denied failure. SQL can be patched post-install via WU/WSUS.
+        "/UpdateEnabled=False",
+        "/USEMICROSOFTUPDATE=False",
         ("/INSTANCENAME={0}" -f $InstanceName),
         $sysAdminsArg,
         "/TCPENABLED=1",
         "/IACCEPTSQLSERVERLICENSETERMS",
-        "/QS"
+        $quietFlag
     )
 
-    # Execute installer
-    Start-Process -FilePath $setupExe.FullName -ArgumentList $SqlArgs -Verb RunAs -Wait
+    if ([Environment]::UserInteractive) {
+        # Interactive desktop session: use -Verb RunAs so the installer attaches to the
+        # desktop and the progress UI is visible to the user.
+        $sqlProc = Start-Process -FilePath $setupExe.FullName -ArgumentList $SqlArgs -Verb RunAs -Wait -PassThru
+        $sqlExitCode = $sqlProc.ExitCode
+    } else {
+        # Remote PS / Server Core: running the installer directly here fails because SQL
+        # setup calls DPAPI (ProtectedData.Protect) to serialize service credentials, and
+        # DPAPI with CurrentUser scope requires an interactive logon session to load the
+        # user master key. A WinRM session uses a network logon — no master key, Access
+        # Denied. Fix: run the installer via a scheduled task as SYSTEM. SYSTEM uses the
+        # machine DPAPI key which is always available regardless of session type.
+        $taskName  = "PSP_SQLInstall"
+        $argString = $SqlArgs -join " "
+        $action    = New-ScheduledTaskAction -Execute $setupExe.FullName -Argument $argString
+        $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 60)
+        $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -Principal $principal -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName
+        Info "SQL installer running via SYSTEM scheduled task. Waiting for completion..."
+        do {
+            Start-Sleep -Seconds 10
+            $taskState = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+        } while ($taskState -eq "Running")
+        $sqlExitCode = (Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false | Out-Null
+    }
+    Info ("SQL installer exited with code: {0}" -f $sqlExitCode)
 
     # Verify SQL service exists and is running
     $serviceName = if ($InstanceName -eq "MSSQLSERVER") { "MSSQLSERVER" } else { "MSSQL`$$InstanceName" }
@@ -444,20 +487,48 @@ function Install-SQLExpress {
         Ok "SQL Server Express installed successfully."
     }
 }
+function Find-SsmsExe {
+  <#
+  .SYNOPSIS
+      Locates ssms.exe for any installed SSMS version (old or new layout).
+  .OUTPUTS
+      [string] Full path to ssms.exe, or $null if not found.
+  #>
+  $candidates = @()
+  foreach ($base in @("C:\Program Files", "C:\Program Files (x86)")) {
+      $dirs = Get-ChildItem -Path $base -Directory -Filter "Microsoft SQL Server Management Studio *" -ErrorAction SilentlyContinue
+      foreach ($d in $dirs) {
+          # New (SSMS 21/22): ...\<ver>\Release\Common7\IDE\ssms.exe
+          $candidates += (Join-Path $d.FullName "Release\Common7\IDE\ssms.exe")
+          # Old (SSMS 18/19/20): ...\<ver>\Common7\IDE\ssms.exe
+          $candidates += (Join-Path $d.FullName "Common7\IDE\ssms.exe")
+      }
+  }
+  $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
 function Install-SSMS {
   param(
   [string]$SsmsUrl,
   [string]$tempDir
   )
   # -----------------------
-  # Download / Install SQL Studio Management Suite
+  # Download / Install SQL Server Management Studio
+  #
+  # aka.ms/ssmsfullsetup now serves the SSMS 21+ Visual Studio bootstrapper
+  # (vs_ssms.exe), which uses double-dash switches ("--quiet --norestart
+  # --wait") instead of the old standalone installer's slash switches. Both
+  # block until the install completes when launched with Start-Process -Wait,
+  # so we detect the installer type by its OriginalFilename and pick the right
+  # flags. Success is confirmed by locating ssms.exe, not by the exit code
+  # (the bootstrapper's early-return codes are not reliable).
   # -----------------------
 
   $DownloadDir = "$tempDir\SSMS"
 
   $ErrorActionPreference = "Stop"
 
-  Info "Installing SQL Server Management Studio (SMSS)..."
+  Info "Installing SQL Server Management Studio (SSMS)..."
 
   # Ensure download directory exists
   if (-not (Test-Path $DownloadDir)) { New-Item -ItemType Directory -Path $DownloadDir | Out-Null }
@@ -470,27 +541,42 @@ function Install-SSMS {
 
   Info "Downloaded SSMS installer to $ssmsInstaller"
 
-  # Step 1: Run SSMS silent install (elevated)
-  Info "Installing SSMS silently..."
-  $proc = Start-Process -FilePath $ssmsInstaller `
-      -ArgumentList "/install", "/quiet", "/norestart", "/log", "$DownloadDir\SSMS-Install.log" `
-      -Verb RunAs -Wait -PassThru
+  # Step 1: Detect installer type and choose the correct silent-install flags.
+  $info = (Get-Item $ssmsInstaller).VersionInfo
+  $isBootstrapper = ($info.OriginalFilename -like "vs_ssms*")
 
-  if ($proc.ExitCode -ne 0) {
+  if ($isBootstrapper) {
+      Info "Detected SSMS 21+ Visual Studio bootstrapper (version $($info.ProductVersion))."
+      $ssmsArgs = @("--quiet", "--norestart", "--wait")
+  } else {
+      Info "Detected SSMS 20 or older standalone installer (version $($info.ProductVersion))."
+      $ssmsArgs = @("/install", "/quiet", "/norestart", "/log", "$DownloadDir\SSMS-Install.log")
+  }
+
+  # Step 2: Run SSMS silent install (elevated), blocking until it completes.
+  Info "Installing SSMS silently; this can take several minutes..."
+  $proc = Start-Process -FilePath $ssmsInstaller -ArgumentList $ssmsArgs -Verb RunAs -Wait -PassThru
+  Info "SSMS installer returned exit code $($proc.ExitCode)."
+
+  # For the old standalone installer the exit code is authoritative
+  # (0 = success, 3010 = success/reboot required). The bootstrapper's codes
+  # are less reliable, so for it we rely on the ssms.exe check below.
+  if (-not $isBootstrapper -and ($proc.ExitCode -notin 0, 3010)) {
       throw "SSMS install failed with exit code $($proc.ExitCode). See log at $DownloadDir\SSMS-Install.log"
   }
 
-  # Step 2: Verify SSMS installation
-  $possiblePaths = @(
-      "C:\Program Files (x86)\Microsoft SQL Server Management Studio 21\Common7\IDE\ssms.exe",
-      "C:\Program Files (x86)\Microsoft SQL Server Management Studio 20\Common7\IDE\ssms.exe",
-      "C:\Program Files (x86)\Microsoft SQL Server Management Studio 19\Common7\IDE\ssms.exe"
-  )
-
-  $ssmsExe = $possiblePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+  # Step 3: Verify SSMS installation (short poll as a safety net in case the
+  # elevated installer handle returned before the files were fully in place).
+  $verifyBy = (Get-Date).AddMinutes(3)
+  $ssmsExe = $null
+  do {
+      $ssmsExe = Find-SsmsExe
+      if (-not $ssmsExe) { Start-Sleep -Seconds 5 }
+  } while (-not $ssmsExe -and (Get-Date) -lt $verifyBy)
 
   if (-not $ssmsExe) {
-      Warn "SSMS executable not found in the expected paths. Please check the install log: $DownloadDir\SSMS-Install.log"
+      Warn "SSMS executable not found after install. Check VS Installer logs at %TEMP%\dd_*.log or the log at $DownloadDir\SSMS-Install.log"
+      return
   }
 
   Ok "SSMS installed successfully at: $ssmsExe"
@@ -529,10 +615,17 @@ function Test-SSMS {
         }
         return $true
     }
-    else {
-        Warn "SQL Server Management Studio (SSMS) is not installed." -ForegroundColor Red
-        return $false
+
+    # Fallback: the SSMS 21+ VS-based installer may register under a different
+    # DisplayName, so also check the filesystem for ssms.exe directly.
+    $ssmsExe = Find-SsmsExe
+    if ($ssmsExe) {
+        Ok "SQL Server Management Studio (SSMS) is installed: $ssmsExe"
+        return $true
     }
+
+    Warn "SQL Server Management Studio (SSMS) is not installed." -ForegroundColor Red
+    return $false
 }
 function Install-IIS {
     <#
@@ -787,7 +880,7 @@ function Test-IISARR {
     # ------------------------
     $arrActivated = $false
     try {
-        Import-Module WebAdministration -ErrorAction Stop
+        Import-Module WebAdministration -ErrorAction SilentlyContinue
 
         $proxySection = Get-WebConfigurationProperty `
             -pspath 'MACHINE/WEBROOT/APPHOST' `
@@ -2160,7 +2253,7 @@ function Get-ListeningPort {
         # Build IIS site --> port map (if available)
         $iisMap = @{}
         try {
-            Import-Module WebAdministration -ErrorAction Stop
+            Import-Module WebAdministration -ErrorAction SilentlyContinue
             Get-Website | ForEach-Object {
                 $siteName = $_.Name
                 $_.Bindings.Collection | ForEach-Object {
@@ -3155,6 +3248,13 @@ try{
 
         Ok "OS check passed - continuing installation..."
 
+        if (-not [Environment]::UserInteractive) {
+            Info "Non-interactive session detected (remote PS / Server Core)."
+            Info "  - SQL Server will be installed silently via a SYSTEM scheduled task."
+            Info "  - SSMS installation will be skipped (GUI tool, not applicable on headless servers)."
+            Info "  - All other GUI prompts will be suppressed where possible."
+        }
+
         # Choose SQL Target Database Instance
         $SqlAddress  = "localhost"
         $SqlPort     = "1433"
@@ -3475,9 +3575,13 @@ try{
             }
         }
 
-        # Install SSMS if not installed and we are not using an external server.
-        if (-not (Test-SSMS) -and -not $ExternalServerInUse){
+        # Install SSMS if not installed, not using an external server, and running in an
+        # interactive desktop session. SSMS is a GUI tool with no value on Server Core
+        # or in remote PS sessions.
+        if (-not (Test-SSMS) -and -not $ExternalServerInUse -and [Environment]::UserInteractive) {
             Install-SSMS -SsmsUrl $SsmsUrl -tempDir $tempDir
+        } elseif (-not [Environment]::UserInteractive) {
+            Info "Skipping SSMS install - no interactive desktop session detected."
         }
 
         # Test IIS and other functions are installed.
@@ -3769,7 +3873,12 @@ try{
         Write-Host "You can modify hosts which are allowed to access the HTTPS Reverse Proxy by running C:\Scripts\WebConfig_Editor.ps1."
         Write-Host "This restriction does not apply on https://$FrontendHost/Agent which is used for the PSP Migration Agent."
         Write-Host "`n"
-        Write-Host "You can now access PowerSyncPro at https://$FrontendHost/ from this system." -ForegroundColor Yellow
+        if ([Environment]::UserInteractive) {
+            Write-Host "You can now access PowerSyncPro at https://$FrontendHost/ from this system." -ForegroundColor Yellow
+        } else {
+            Write-Host "PowerSyncPro is now available at https://$FrontendHost/ from any machine that can reach this server." -ForegroundColor Yellow
+            Write-Host "Admin access is currently restricted to localhost - run C:\Scripts\WebConfig_Editor.ps1 to allow access from your IP before logging in." -ForegroundColor Yellow
+        }
         Write-Host "The default password is admin / 123qwe, please change it." -ForegroundColor Yellow
         Write-Host "`n"
         Write-Host "We recommend you reboot your server before using PowerSyncPro." -ForegroundColor Yellow
