@@ -1,13 +1,10 @@
 # PowerSyncPro Automated Installation Script
 
-## Maintained By
-Jamie Richard - jamie.richard@powersyncpro.com
-
 ## Description
 
 This script automates the end-to-end installation of PowerSyncPro on a Windows Server, including all prerequisites. It downloads required components from Microsoft, PowerSyncPro, and the PowerSyncPro GitHub, installs and configures IIS as a reverse proxy, sets up SSL, and hardens the server's TLS configuration.
 
-> **Full documentation:** [PowerSyncPro Knowledge Base — Automated Installation Script](https://kb.powersyncpro.com/install-and-configure/powersyncpro-automated-installation-script)
+> **Full documentation:** [PowerSyncPro Knowledge Base — Automated Installation Script](https://kb.powersyncpro.com/powersyncpro-automated-installation-script)
 
 ---
 
@@ -51,7 +48,7 @@ This script is intended for new PowerSyncPro installations on a dedicated Window
 
 1. **Run the script** as Administrator on the target Windows Server.
 2. **Select a SQL target** — choose an existing local instance, install a new SQL Express instance, or specify an external SQL server.
-3. **Configure a certificate** — choose Let's Encrypt (ACME), bring your own PFX, or generate a self-signed certificate.
+3. **Configure a certificate** — choose Let's Encrypt (ACME), bring your own PFX, generate a self-signed certificate, or use a certificate already installed on the server.
 4. **Script installs automatically** — .NET 8 Hosting Bundle, VC++ Redistributables, SQL Express (if needed), SSMS, IIS with URL Rewrite and ARR, PowerSyncPro MSI, reverse proxy web.config, TLS hardening, and the selected certificate.
 5. **Reboot** to apply TLS hardening changes.
 
@@ -68,7 +65,7 @@ Use this approach when you need to manually install the PowerSyncPro MSI (e.g. f
    ```powershell
    .\PSP_AutoInstall.ps1 -ReverseProxyOnly
    ```
-   The Kestrel backend port is read from the installed `appsettings.json`, so a non-default port chosen during the MSI install is picked up automatically. (`-CompletionOnly` and `-IISOnly` still work as deprecated aliases.)
+   The Kestrel backend port is read from the installed `appsettings.json`, so a non-default port chosen during the MSI install is picked up automatically. (`-CompletionOnly` from earlier versions still works as a deprecated alias.)
 
 ### Standalone Reverse Proxy (Separate Server)
 
@@ -129,7 +126,7 @@ Let's Encrypt is unavailable offline — the certificate menu offers BYOC (PFX),
 | `-ReverseProxyOnly` | Configure only the IIS reverse-proxy layer, certificate, and hardening. Local backend by default (Kestrel port read from `appsettings.json`); remote backend with `-PSPBackendUrl`. |
 | `-PSPBackendUrl` | Full URL of a remote PowerSyncPro backend (e.g. `https://psp.corp.local:5001`). Makes `-ReverseProxyOnly` a standalone proxy. |
 | `-NoLockAdmin` | Opts out of the standalone-proxy admin lockdown (remote backend only). |
-| `-CompletionOnly` / `-IISOnly` | Deprecated aliases for `-ReverseProxyOnly`. |
+| `-CompletionOnly` | Deprecated alias for `-ReverseProxyOnly`. |
 | `-KestrelHttpPort` | Kestrel HTTP backend port (default 5000). |
 | `-KestrelHttpsPort` | Kestrel HTTPS backend port (default 5001). |
 | `-PrepareOffline` | Build an offline bundle at `-OfflinePath`, then exit. Installs nothing; may run unelevated. |
@@ -152,7 +149,7 @@ Let's Encrypt is unavailable offline — the certificate menu offers BYOC (PFX),
 | IIS URL Rewrite | Required for reverse proxy |
 | IIS Application Request Routing (ARR) | Required for reverse proxy |
 | PowerSyncPro MSI | Installed with IIS reverse proxy enabled |
-| SSL Certificate | Let's Encrypt, custom PFX, or self-signed |
+| SSL Certificate | Let's Encrypt, custom PFX, self-signed, or a certificate already installed on the server |
 | TLS Hardening | Disables SSL 2.0, SSL 3.0, TLS 1.0, TLS 1.1, and weak ciphers |
 
 ---
@@ -177,9 +174,10 @@ Let's Encrypt is unavailable offline — the certificate menu offers BYOC (PFX),
 ### Existing Certificate
 
 - Uses a certificate already installed in the server's `LocalMachine\My` store — no PFX file needed.
-- The certificate currently bound to port 443 is offered as the default; expired certificates and those without a private key are filtered out.
+- The certificate currently bound to port 443 is offered as the default; certificates that are expired, have no private key, or are not valid for server authentication are filtered out.
 - Wildcard certificates prompt for the exact FQDN; multi-SAN certificates present a picker.
 - Never deletes other certificates, including ones with the same subject.
+- Renewal is managed outside the script — see Certificate Renewal below.
 
 ---
 
@@ -219,11 +217,10 @@ To force re-application of PSP and IIS configuration without renewing (e.g. afte
 C:\Scripts\Cert-Puller_PoshACME.ps1 -Domain "psp.company.com" -ContactEmail "admin@company.com" -ForcePostInstall
 ```
 
-**BYOC (Bring Your Own Certificate):** When your certificate is due for renewal, run `Cert-Renewer.ps1` as Administrator. Place the new PFX in the same directory and run:
-```powershell
-C:\Scripts\Cert-Renewer.ps1
-```
-The script will scan for `.pfx` files in the current directory and prompt you to select one, or you can pass the path directly with `-PfxPath`. It updates `appsettings.json`, IIS bindings, private key ACLs, and restarts the PSP service automatically.
+**BYOC and Existing certificates:** When your certificate is due for renewal, run the installation script with `-ReverseProxyOnly` and select your certificate type from the menu. The script updates the PowerSyncPro configuration, the private-key permissions, and the IIS port 443 binding in one pass.
+
+- **BYOC:** copy the renewed PFX file to the server, run `.\PSP_AutoInstall.ps1 -ReverseProxyOnly`, choose **BYOC**, and supply the new PFX and password. The renewed certificate replaces the old one automatically.
+- **Existing:** install the renewed certificate into the server's certificate store, run `.\PSP_AutoInstall.ps1 -ReverseProxyOnly`, choose **Existing**, and select the renewed certificate from the list. **Note:** the default selection is the certificate currently serving HTTPS — during a renewal that is the *old* certificate, so choose the new one by checking the Expires date shown for each entry.
 
 ---
 
@@ -242,7 +239,7 @@ The script will scan for `.pfx` files in the current directory and prompt you to
 - **Windows Server 2016 or newer is required.** The script will exit if run on a workstation OS or a Server version older than 2016.
 - **Existing IIS configurations may be modified.** The script writes a custom `web.config` to `C:\inetpub\wwwroot`. If IIS is already in use for another purpose on this server, do not use this script.
 - **A reboot is required after installation** for TLS hardening registry changes to take effect.
-- **`-PreReqOnly` and `-ReverseProxyOnly` cannot be used together** (this includes the `-CompletionOnly` / `-IISOnly` aliases).
+- **`-PreReqOnly` and `-ReverseProxyOnly` cannot be used together** (this includes the `-CompletionOnly` alias).
 - **`-Headless` requires `-PreReqOnly`** and assumes a default `MSSQLSERVER` instance exists and is running.
 - **`-ReverseProxyOnly` requires an interactive session** — the certificate menu prompts.
 - **Let's Encrypt is unavailable offline.** `-InstallOffline` offers BYOC, self-signed, and existing certificates only.
